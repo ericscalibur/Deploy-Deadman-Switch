@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Deploy: Deadman Switch</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <div id="login-page" class="container">
+            <h1>Login</h1>
+            <form id="login-form">
+                <label for="email">Email:</label>
+                <input
+                    type="email"
+                    id="email"
+                    name="email"
+                    required
+                /><br /><br />
+
+                <label for="password">Password:</label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    required
+                /><br /><br />
+
+                <button
+                    type="button"
+                    id="auth-button"
+                    data-mode="login"
+                    class="login-mode"
+                >
+                    Login
+                </button>
+            </form>
+            <p>
+                <a href="#" id="forgot-password-link">Forgot Password</a> |
+                <a href="#" id="signup-login-button">Sign Up</a>
+            </p>
+        </div>
+
+        <div id="setup-page" class="container" style="display: none">
+            <div
+                style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                "
+            >
+                <h1>Deadman Switch Set-Up</h1>
+                <button
+                    id="logout-button"
+                    style="
+                        background-color: #d9534f;
+                        color: white;
+                        padding: 8px 16px;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                    "
+                >
+                    Logout
+                </button>
+            </div>
+            <p>
+                Welcome to Deploy: Deadman Switch service. Here’s how it works.
+                You will receive a Check-In at regular Intervals. When you
+                receive the email, open it and click on the link and it will
+                automatically log your activity. Additionally, if you log in to
+                your Deploy account, that activity is also logged. If the Period
+                of Inactivity elapses without any activity logged from your
+                Check-Ins, the Deadman Switch will activate and your emails will
+                be sent. All your data is encrypted until the final emails are
+                sent. You can send up to 20 emails.
+            </p>
+
+            <form id="setup-form">
+                <fieldset>
+                    <legend>Preferred method to receive Check-Ins?</legend>
+                    <input
+                        type="checkbox"
+                        id="email-checkin"
+                        name="checkin-method"
+                        value="email"
+                    />
+                    <label for="email-checkin">Email</label><br />
+                    <!-- Add other methods later -->
+                </fieldset>
+
+                <fieldset>
+                    <legend>Select your Interval to receive Check-Ins?</legend>
+                    <input
+                        type="radio"
+                        id="2-hours"
+                        name="checkin-interval"
+                        value="2-hours"
+                    />
+                    <label for="2-hours">2 Hours</label><br />
+
+                    <input
+                        type="radio"
+                        id="2-days"
+                        name="checkin-interval"
+                        value="2-days"
+                    />
+                    <label for="2-days">2 Days</label><br />
+
+                    <input
+                        type="radio"
+                        id="2-weeks"
+                        name="checkin-interval"
+                        value="2-weeks"
+                    />
+                    <label for="2-weeks">2 Weeks</label><br />
+                </fieldset>
+
+                <fieldset>
+                    <legend>Select your Period of Inactivity:</legend>
+                    <input
+                        type="radio"
+                        id="1-day"
+                        name="inactivity-period"
+                        value="1-day"
+                    />
+                    <label for="1-day">1 Day</label><br />
+
+                    <input
+                        type="radio"
+                        id="1-month"
+                        name="inactivity-period"
+                        value="1-month"
+                    />
+                    <label for="1-month">1 Month</label><br />
+
+                    <input
+                        type="radio"
+                        id="3-months"
+                        name="inactivity-period"
+                        value="3-months"
+                    />
+                    <label for="3-months">3 Months</label><br />
+
+                    <input
+                        type="radio"
+                        id="6-months"
+                        name="inactivity-period"
+                        value="6-months"
+                    />
+                    <label for="6-months">6 Months</label><br />
+
+                    <input
+                        type="radio"
+                        id="9-months"
+                        name="inactivity-period"
+                        value="9-months"
+                    />
+                    <label for="9-months">9 Months</label><br />
+                </fieldset>
+            </form>
+
+            <div
+                id="countdown-section"
+                style="
+                    margin: 30px 0;
+                    padding: 20px;
+                    background-color: #f9f9f9;
+                    border-radius: 8px;
+                "
+            >
+                <div
+                    id="test-mode-indicator"
+                    style="
+                        background-color: #fcf8e3;
+                        border: 2px solid #faebcc;
+                        color: #8a6d3b;
+                        padding: 10px;
+                        margin-bottom: 15px;
+                        border-radius: 4px;
+                        text-align: center;
+                        font-weight: bold;
+                        display: none;
+                    "
+                >
+                    🧪 TEST MODE ACTIVE - Check-ins every 5 minutes, Deadman
+                    timer 15 minutes
+                </div>
+                <h2>Status & Countdowns</h2>
+
+                <div
+                    style="
+                        display: flex;
+                        justify-content: space-between;
+                        gap: 20px;
+                    "
+                >
+                    <div
+                        style="
+                            flex: 1;
+                            text-align: center;
+                            padding: 15px;
+                            background-color: #dff0d8;
+                            border-radius: 5px;
+                            border: 1px solid #d6e9c6;
+                        "
+                    >
+                        <h3 style="margin-top: 0; color: #3c763d">
+                            Next Check-In
+                        </h3>
+                        <div
+                            id="checkin-countdown"
+                            style="
+                                font-size: 24px;
+                                font-weight: bold;
+                                color: #3c763d;
+                            "
+                        >
+                            --:--:--
+                        </div>
+                        <small style="color: #3c763d"
+                            >Time until next check-in email</small
+                        >
+                    </div>
+
+                    <div
+                        style="
+                            flex: 1;
+                            text-align: center;
+                            padding: 15px;
+                            background-color: #fcf8e3;
+                            border-radius: 5px;
+                            border: 1px solid #faebcc;
+                        "
+                    >
+                        <h3 style="margin-top: 0; color: #8a6d3b">
+                            Deadman Switch
+                        </h3>
+                        <div
+                            id="deadman-countdown"
+                            style="
+                                font-size: 24px;
+                                font-weight: bold;
+                                color: #8a6d3b;
+                            "
+                        >
+                            --:--:--
+                        </div>
+                        <small style="color: #8a6d3b"
+                            >Time until activation (if no activity)</small
+                        >
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px; text-align: center">
+                    <small style="color: #666">
+                        Last activity:
+                        <span id="last-activity">Not recorded</span>
+                    </small>
+                </div>
+            </div>
+
+            <h2>Emails:</h2>
+            <table id="emails-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <button id="new-email-button">+New</button>
+
+            <div
+                style="
+                    margin-top: 30px;
+                    text-align: center;
+                    padding: 20px;
+                    border-top: 2px solid #ddd;
+                "
+            >
+                <button
+                    id="save-settings-button"
+                    style="
+                        background-color: #d9534f;
+                        color: white;
+                        padding: 15px 30px;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 16px;
+                        font-weight: bold;
+                    "
+                >
+                    Save Settings & Activate Deadman Switch
+                </button>
+                <p style="margin-top: 10px; color: #666; font-size: 14px">
+                    Warning: Once activated, check-in emails will begin
+                    immediately. Make sure all settings and emails are correct
+                    before clicking.
+                </p>
+
+                <div
+                    id="admin-section"
+                    style="
+                        margin-top: 20px;
+                        padding-top: 20px;
+                        border-top: 1px solid #ddd;
+                        display: none;
+                    "
+                >
+                    <button
+                        id="wipe-data-button"
+                        style="
+                            background-color: #d9534f;
+                            color: white;
+                            padding: 10px 20px;
+                            border: none;
+                            border-radius: 3px;
+                            cursor: pointer;
+                            font-size: 14px;
+                        "
+                    >
+                        🧹 WIPE ALL DATA (Test Mode Only)
+                    </button>
+                    <p style="margin-top: 5px; color: #999; font-size: 12px">
+                        This will clear all users, deadman switches, and data
+                        files
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <script src="script.js"></script>
+    </body>
+</html>

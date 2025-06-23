@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Edit Email</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <div class="container">
+            <h1>Edit Email</h1>
+            <form id="edit-email-form">
+                <label for="email-address">Email Address:</label>
+                <input
+                    type="email"
+                    id="email-address"
+                    name="email-address"
+                    required
+                /><br /><br />
+
+                <label for="email-content">Email Content:</label>
+                <textarea
+                    id="email-content"
+                    name="email-content"
+                    rows="10"
+                    cols="50"
+                    maxlength="2000"
+                    required
+                ></textarea
+                ><br /><br />
+
+                <button type="submit" id="save-email-button">Save</button>
+            </form>
+        </div>
+        <script>
+            document.addEventListener("DOMContentLoaded", () => {
+                const form = document.getElementById("edit-email-form");
+                const emailAddressInput =
+                    document.getElementById("email-address");
+                const emailContentTextarea =
+                    document.getElementById("email-content");
+                const saveButton = document.getElementById("save-email-button");
+
+                // Get the email index from the URL parameters
+                const urlParams = new URLSearchParams(window.location.search);
+                const emailIndex = urlParams.get("index");
+
+                // Fetch email data from the server based on the emailIndex
+                // and populate the form fields.  If emailIndex is null, then
+                // it's a new email.
+                if (emailIndex !== null) {
+                    // Load existing email data
+                    const emails = JSON.parse(
+                        localStorage.getItem("emails") || "[]",
+                    );
+                    const email = emails[emailIndex];
+                    if (email) {
+                        emailAddressInput.value = email.address;
+                        emailContentTextarea.value = email.content;
+                    }
+                }
+
+                form.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+
+                    const emailAddress = emailAddressInput.value;
+                    const emailContent = emailContentTextarea.value;
+
+                    // Send the email data to the server to save or update
+                    // the email. Include the emailIndex if it's an update.
+                    try {
+                        const token = localStorage.getItem("token");
+                        const response = await fetch("/deadman/emails", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                Authorization: `Bearer ${token}`,
+                            },
+                            body: JSON.stringify({
+                                emailAddress,
+                                emailContent,
+                                emailIndex: emailIndex
+                                    ? parseInt(emailIndex)
+                                    : null,
+                            }),
+                        });
+
+                        if (response.ok) {
+                            // Also save to localStorage for immediate UI update
+                            const emails = JSON.parse(
+                                localStorage.getItem("emails") || "[]",
+                            );
+
+                            if (emailIndex !== null) {
+                                // Update existing email
+                                emails[emailIndex] = {
+                                    address: emailAddress,
+                                    content: emailContent,
+                                };
+                            } else {
+                                // Add new email
+                                emails.push({
+                                    address: emailAddress,
+                                    content: emailContent,
+                                });
+                            }
+
+                            localStorage.setItem(
+                                "emails",
+                                JSON.stringify(emails),
+                            );
+
+                            // After saving, redirect back to the setup page
+                            window.location.href = "/index.html";
+                        } else {
+                            alert("Failed to save email");
+                        }
+                    } catch (error) {
+                        console.error("Error saving email:", error);
+                        alert("Failed to save email");
+                    }
+                });
+            });
+        </script>
+    </body>
+</html>
