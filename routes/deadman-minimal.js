@@ -4,16 +4,11 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const emailService = require("../utils/emailService");
 
-// Test mode - set to true for ultra-short intervals (2 min deadman, 1 min checkins)
-const TEST_MODE = true;
+// Production mode - user-selected intervals are used
+const TEST_MODE = false;
 
-// Helper function to get interval in milliseconds (with ultra-short test mode)
+// Helper function to get interval in milliseconds based on user selection
 function getIntervalMs(intervalValue) {
-  if (TEST_MODE) {
-    return 1 * 60 * 1000; // 1 minute for testing
-  }
-
-  // Use actual user settings in production
   switch (intervalValue) {
     case "2-hours":
       return 2 * 60 * 60 * 1000; // 2 hours
@@ -26,13 +21,8 @@ function getIntervalMs(intervalValue) {
   }
 }
 
-// Helper function to get inactivity period in milliseconds (with ultra-short test mode)
+// Helper function to get inactivity period in milliseconds based on user selection
 function getInactivityMs(periodValue) {
-  if (TEST_MODE) {
-    return 3 * 60 * 1000; // 3 minutes for testing
-  }
-
-  // Use actual user settings in production
   switch (periodValue) {
     case "1-day":
       return 24 * 60 * 60 * 1000; // 1 day
@@ -437,11 +427,11 @@ router.get("/deadman-status", authenticateToken, (req, res) => {
   }
 });
 
-// Simple activation function (mimics wipe pattern that works)
+// Simple activation function (DISABLED IN PRODUCTION)
 router.post("/activate-simple", (req, res) => {
   if (!TEST_MODE) {
     return res.status(403).json({
-      message: "Simple activation only available in test mode",
+      message: "Simple activation not available in production mode",
     });
   }
 
@@ -585,11 +575,11 @@ router.post("/reset", authenticateToken, (req, res) => {
   }
 });
 
-// Admin endpoint to wipe all user data (TEST MODE ONLY)
+// Admin endpoint to wipe all user data (DISABLED IN PRODUCTION)
 router.post("/admin/wipe-all-data", (req, res) => {
   if (!TEST_MODE) {
     return res.status(403).json({
-      message: "Data wipe only available in test mode",
+      message: "Data wipe not available in production mode",
     });
   }
 
