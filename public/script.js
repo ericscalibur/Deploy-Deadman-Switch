@@ -8,7 +8,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const authButton = document.getElementById("auth-button");
   const logoutButton = document.getElementById("logout-button");
   const saveSettingsButton = document.getElementById("save-settings-button");
-  const wipeDataButton = document.getElementById("wipe-data-button");
+
   const emailsTableBody = document.querySelector("#emails-table tbody");
 
   // Function to handle login/signup button click
@@ -249,46 +249,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     saveSettingsButton.onclick = activateDeadmanSwitch;
   }
 
-  // Function to handle wipe data button click
-  if (wipeDataButton) {
-    wipeDataButton.addEventListener("click", async () => {
-      const confirmed = confirm(
-        "⚠️ WARNING: This will permanently delete:\n\n" +
-          "• All user accounts\n" +
-          "• All active deadman switches\n" +
-          "• All user data files\n\n" +
-          "Are you absolutely sure you want to wipe ALL data?",
-      );
-
-      if (!confirmed) return;
-
-      try {
-        const response = await fetch("/deadman/admin/wipe-all-data", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-
-        if (response.ok) {
-          alert(
-            "🧹 All data wiped successfully! You can now create fresh accounts.",
-          );
-          // Clear local storage
-          localStorage.clear();
-          // Redirect to login page
-          window.location.reload();
-        } else {
-          const data = await response.json();
-          alert("Failed to wipe data: " + (data.message || "Unknown error"));
-        }
-      } catch (error) {
-        console.error("Error wiping data:", error);
-        alert("Failed to wipe data: " + error.message);
-      }
-    });
-  }
-
   // Function to handle new email button click
   newEmailButton.addEventListener("click", () => {
     // Redirect to the edit email page (you'll need to create this page)
@@ -378,36 +338,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Initially load emails
   loadEmails();
 
-  // Function to check if backend is in test mode
-  async function checkTestMode() {
-    try {
-      const token = localStorage.getItem("token");
-      const response = await fetch("/deadman/test-status", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const indicator = document.getElementById("test-mode-indicator");
-        const adminSection = document.getElementById("admin-section");
-        if (data.testMode && indicator) {
-          indicator.style.display = "block";
-          if (adminSection) adminSection.style.display = "block";
-          window.testModeActive = true;
-          // Recalculate timers with test mode
-          if (deadmanSwitchActivated) {
-            await startCountdownTimers();
-          }
-        } else {
-          window.testModeActive = false;
-        }
-      }
-    } catch (error) {
-      console.log("Could not check test mode status");
-    }
-  }
-
   // Countdown timer variables
   let checkinInterval = null;
   let deadmanInterval = null;
@@ -416,11 +346,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   let lastActivityTime = new Date();
   let deadmanSwitchActivated = false;
 
-  // Function to get interval in milliseconds
-  function getIntervalMs(intervalValue, testMode = false) {
-    if (testMode) {
-      return 5 * 60 * 1000; // 5 minutes for testing
-    }
+  // Function to get interval in milliseconds based on user selection
+  function getIntervalMs(intervalValue) {
     switch (intervalValue) {
       case "2-hours":
         return 2 * 60 * 60 * 1000;
@@ -433,11 +360,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Function to get inactivity period in milliseconds
-  function getInactivityMs(periodValue, testMode = false) {
-    if (testMode) {
-      return 15 * 60 * 1000; // 15 minutes for testing
-    }
+  // Function to get inactivity period in milliseconds based on user selection
+  function getInactivityMs(periodValue) {
     switch (periodValue) {
       case "1-day":
         return 1 * 24 * 60 * 60 * 1000;
@@ -543,15 +467,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           localStorage.setItem("deadmanSwitchActivated", "true");
           localStorage.setItem("lastActivity", data.lastActivity);
 
-          // Show test mode indicator if backend is in test mode
-          const testModeIndicator = document.getElementById(
-            "test-mode-indicator",
-          );
-          if (testModeIndicator && data.testMode) {
-            testModeIndicator.style.display = "block";
-            window.testModeActive = true;
-          }
-
           // Update button to show deactivate option
           updateButtonState("active");
         } else {
@@ -577,10 +492,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       localStorage.getItem("formSelections") || "{}",
     );
     if (savedFormData.checkinInterval) {
-      const intervalMs = getIntervalMs(
-        savedFormData.checkinInterval,
-        window.testModeActive,
-      );
+      const intervalMs = getIntervalMs(savedFormData.checkinInterval);
       nextCheckinTime = new Date().getTime() + intervalMs;
     }
   }
@@ -591,10 +503,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       localStorage.getItem("formSelections") || "{}",
     );
     if (savedFormData.inactivityPeriod) {
-      const inactivityMs = getInactivityMs(
-        savedFormData.inactivityPeriod,
-        window.testModeActive,
-      );
+      const inactivityMs = getInactivityMs(savedFormData.inactivityPeriod);
       deadmanActivationTime = lastActivityTime.getTime() + inactivityMs;
     }
   }
@@ -690,8 +599,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (deadmanSwitchActivated) {
       // Check deadman status and update button accordingly
       await checkDeadmanStatus();
-      // Check test mode when already activated
-      checkTestMode();
     }
     await startCountdownTimers();
   } else {
