@@ -10,6 +10,8 @@ const TEST_MODE = false;
 // Helper function to get interval in milliseconds based on user selection
 function getIntervalMs(intervalValue) {
   switch (intervalValue) {
+    case "1-minute":
+      return 1 * 60 * 1000; // 1 minute (testing)
     case "2-hours":
       return 2 * 60 * 60 * 1000; // 2 hours
     case "2-days":
@@ -24,6 +26,8 @@ function getIntervalMs(intervalValue) {
 // Helper function to get inactivity period in milliseconds based on user selection
 function getInactivityMs(periodValue) {
   switch (periodValue) {
+    case "3-minutes":
+      return 3 * 60 * 1000; // 3 minutes (testing)
     case "1-day":
       return 24 * 60 * 60 * 1000; // 1 day
     case "1-month":
