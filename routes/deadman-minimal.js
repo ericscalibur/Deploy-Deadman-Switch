@@ -3,9 +3,7 @@ const router = express.Router();
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const emailService = require("../utils/emailService");
-
-// Production mode - user-selected intervals are used
-const TEST_MODE = false;
+const UserService = require("../database/userService");
 
 // Helper function to get interval in milliseconds based on user selection
 function getIntervalMs(intervalValue) {
@@ -43,23 +41,45 @@ function getInactivityMs(periodValue) {
   }
 }
 
-// Store active deadman switches
-const activeDeadmanSwitches = new Map();
+// Initialize database service
+const userService = new UserService();
 
-// Store check-in tokens (token -> userEmail mapping)
+// Initialize database connection
+userService.connect().catch(console.error);
+
+// In-memory cache for active sessions (will be replaced by database queries)
+const activeDeadmanSwitches = new Map();
 const checkinTokens = new Map();
 
-// Middleware to verify JWT token
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
+// Middleware to verify JWT token and load user data
+const authenticateToken = async (req, res, next) => {
+  // Try to get token from HTTP-only cookie first, then fallback to Authorization header
+  const token =
+    req.cookies.token ||
+    (req.headers["authorization"] &&
+      req.headers["authorization"].split(" ")[1]);
 
   if (token == null) return res.sendStatus(401);
 
-  jwt.verify(token, process.env.SECRET_KEY, (err, user) => {
+  jwt.verify(token, process.env.SECRET_KEY, async (err, user) => {
     if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
+
+    try {
+      // Get user data from database
+      const userData = await userService.getUserById(user.userId);
+      if (!userData) {
+        return res.sendStatus(403);
+      }
+
+      req.user = {
+        ...user,
+        userData,
+      };
+      next();
+    } catch (error) {
+      console.error("Error loading user data:", error);
+      return res.sendStatus(500);
+    }
   });
 };
 
@@ -68,28 +88,164 @@ router.get("/test", (req, res) => {
   res.json({ message: "Minimal deadman routes working!" });
 });
 
-// Test status endpoint
-router.get("/test-status", authenticateToken, (req, res) => {
+// User signup endpoint (encrypted database)
+router.post("/signup", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password required" });
+    }
+
+    // Create new user with encrypted data
+    const userData = await userService.createUser(email, password, {
+      emails: [],
+      settings: {},
+      checkinTokens: {},
+    });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: userData.userId, email: userData.email },
+      process.env.SECRET_KEY,
+      { expiresIn: "24h" },
+    );
+
+    // Log audit event
+    await userService.logAudit(
+      userData.userId,
+      "USER_SIGNUP",
+      "User account created",
+      req.ip,
+      req.get("User-Agent"),
+    );
+
+    // Set HTTP-only cookie instead of sending token in response
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      user: {
+        id: userData.userId,
+        email: userData.email,
+      },
+    });
+  } catch (error) {
+    console.error("Error creating user:", error);
+
+    if (error.message === "User already exists") {
+      return res.status(409).json({ message: "User already exists" });
+    }
+
+    res.status(500).json({ message: "Failed to create user" });
+  }
+});
+
+// User logout endpoint
+router.post("/logout", (req, res) => {
+  // Clear the HTTP-only cookie
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+  });
+
   res.json({
-    testMode: TEST_MODE,
-    message: TEST_MODE ? "Test mode is active" : "Test mode is inactive",
+    success: true,
+    message: "Logged out successfully",
   });
 });
 
-// Store user emails (in memory for now)
-const userEmails = new Map();
+// User login endpoint (encrypted database)
+router.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-// Store deadman activation history to track triggered state
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password required" });
+    }
+
+    // Authenticate user and get decrypted data
+    const userData = await userService.authenticateUser(email, password);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: userData.userId, email: userData.email },
+      process.env.SECRET_KEY,
+      { expiresIn: "24h" },
+    );
+
+    // Log audit event
+    await userService.logAudit(
+      userData.userId,
+      "USER_LOGIN",
+      "User logged in",
+      req.ip,
+      req.get("User-Agent"),
+    );
+
+    // Set HTTP-only cookie instead of sending token in response
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    });
+
+    res.json({
+      success: true,
+      message: "Login successful",
+      user: {
+        id: userData.userId,
+        email: userData.email,
+        lastLogin: userData.lastLogin,
+      },
+    });
+  } catch (error) {
+    console.error("Error authenticating user:", error);
+
+    if (error.message === "Invalid credentials") {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    res.status(500).json({ message: "Authentication failed" });
+  }
+});
+
+// Legacy in-memory storage (being phased out for encrypted database)
+const userEmails = new Map();
 const deadmanActivationHistory = new Map();
 
-// Emails endpoint - save/update email data
-router.post("/emails", authenticateToken, (req, res) => {
+// Emails endpoint - save/update email data (encrypted database)
+router.post("/emails", authenticateToken, async (req, res) => {
   try {
+    const userId = req.user.userId;
     const userEmail = req.user.email;
     const { emailAddress, emailContent, emailIndex } = req.body;
 
-    // Get existing emails for this user
-    const existingEmails = userEmails.get(userEmail) || [];
+    // Get password from request (needed for decryption)
+    const password = req.body.password;
+    if (!password) {
+      return res
+        .status(400)
+        .json({ message: "Password required for encryption" });
+    }
+
+    // Get user's salt and current encrypted data
+    const user = await userService.getUserById(userId);
+    const currentData = await userService.getUserData(
+      userId,
+      password,
+      user.salt,
+    );
+
+    let existingEmails = currentData.emails || [];
 
     if (emailIndex !== null && emailIndex >= 0) {
       // Update existing email
@@ -111,8 +267,21 @@ router.post("/emails", authenticateToken, (req, res) => {
       });
     }
 
-    // Save back to storage
-    userEmails.set(userEmail, existingEmails);
+    // Update encrypted database
+    await userService.updateUserData(userId, password, user.salt, {
+      emails: existingEmails,
+      settings: currentData.settings,
+      checkinTokens: currentData.checkinTokens,
+    });
+
+    // Log audit event
+    await userService.logAudit(
+      userId,
+      emailIndex !== null ? "EMAIL_UPDATED" : "EMAIL_ADDED",
+      `Email ${emailIndex !== null ? "updated" : "added"}: ${emailAddress}`,
+      req.ip,
+      req.get("User-Agent"),
+    );
 
     res.json({
       success: true,
@@ -125,20 +294,32 @@ router.post("/emails", authenticateToken, (req, res) => {
   }
 });
 
-// Get emails endpoint
-router.get("/emails", authenticateToken, (req, res) => {
+// Get emails endpoint (encrypted database)
+router.get("/emails", authenticateToken, async (req, res) => {
   try {
-    const userEmail = req.user.email;
-    const emails = userEmails.get(userEmail) || [];
+    const userId = req.user.userId;
 
-    // If no emails in backend but user is requesting, sync from frontend will happen via POST
+    // Get password from query params or body (needed for decryption)
+    const password = req.query.password || req.body.password;
+    if (!password) {
+      return res
+        .status(400)
+        .json({ message: "Password required for decryption" });
+    }
+
+    // Get user's salt and decrypt data
+    const user = await userService.getUserById(userId);
+    const userData = await userService.getUserData(userId, password, user.salt);
+
+    const emails = userData.emails || [];
+
     res.json({
       success: true,
       emails: emails,
       syncInfo: {
         backendCount: emails.length,
-        totalUsersWithEmails: userEmails.size,
-        needsSync: emails.length === 0,
+        encrypted: true,
+        needsSync: false,
       },
     });
   } catch (error) {
@@ -147,22 +328,198 @@ router.get("/emails", authenticateToken, (req, res) => {
   }
 });
 
-// Activate deadman switch
-router.post("/activate", authenticateToken, (req, res) => {
+// Delete email by index (encrypted database)
+router.delete("/emails/:index", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const emailIndex = parseInt(req.params.index);
+
+    // Get password from request body (needed for decryption)
+    const password = req.body.password;
+    if (!password) {
+      return res
+        .status(400)
+        .json({ message: "Password required for encryption" });
+    }
+
+    // Validate email index
+    if (isNaN(emailIndex) || emailIndex < 0) {
+      return res.status(400).json({ message: "Invalid email index" });
+    }
+
+    // Get user's salt and current encrypted data
+    const user = await userService.getUserById(userId);
+    const currentData = await userService.getUserData(
+      userId,
+      password,
+      user.salt,
+    );
+
+    let existingEmails = currentData.emails || [];
+
+    // Check if email index exists
+    if (emailIndex >= existingEmails.length) {
+      return res.status(404).json({ message: "Email not found" });
+    }
+
+    // Remove email at specified index
+    existingEmails.splice(emailIndex, 1);
+
+    // Update encrypted database
+    await userService.updateUserData(userId, password, user.salt, {
+      emails: existingEmails,
+      settings: currentData.settings,
+      checkinTokens: currentData.checkinTokens,
+    });
+
+    // Log audit event
+    await userService.logAudit(
+      userId,
+      "EMAIL_DELETED",
+      `Email deleted at index ${emailIndex}`,
+      req.ip,
+    );
+
+    res.json({
+      message: "Email deleted successfully",
+      remainingCount: existingEmails.length,
+    });
+  } catch (error) {
+    console.error("Error deleting email:", error);
+    res.status(500).json({ message: "Failed to delete email" });
+  }
+});
+
+// Status endpoint to check if user is authenticated
+router.get("/status", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const user = await userService.getUserById(userId);
+
+    res.json({
+      success: true,
+      authenticated: true,
+      user: {
+        id: userId,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting user status:", error);
+    res.status(500).json({ message: "Failed to get user status" });
+  }
+});
+
+// Timer status endpoint for countdown synchronization
+router.get("/timer-status", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
-    const { checkinMethod, checkinInterval, inactivityPeriod } = req.body;
 
-    // Get emails from backend storage instead of request body
-    const emails = userEmails.get(userEmail) || [];
+    // Check if deadman switch is active for this user
+    if (activeDeadmanSwitches.has(userEmail)) {
+      const switchData = activeDeadmanSwitches.get(userEmail);
+      const now = Date.now();
+
+      res.json({
+        success: true,
+        active: true,
+        lastActivity: switchData.lastActivity,
+        nextCheckin: switchData.nextCheckin,
+        deadmanActivation: switchData.deadmanActivation,
+        settings: {
+          checkinInterval: switchData.checkinInterval,
+          inactivityPeriod: switchData.inactivityPeriod,
+        },
+      });
+    } else {
+      res.json({
+        success: true,
+        active: false,
+      });
+    }
+  } catch (error) {
+    console.error("Error getting timer status:", error);
+    res.status(500).json({ message: "Failed to get timer status" });
+  }
+});
+
+// Deadman status endpoint for checking if deadman was triggered
+router.get("/deadman-status", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Check if deadman switch was triggered (would have been removed from activeDeadmanSwitches)
+    const history = deadmanActivationHistory.get(userId);
+
+    if (history && history.triggered) {
+      res.json({
+        success: true,
+        triggered: true,
+        triggeredAt: history.triggeredAt,
+        emailsSent: history.emailsSent,
+      });
+    } else {
+      res.json({
+        success: true,
+        triggered: false,
+      });
+    }
+  } catch (error) {
+    console.error("Error getting deadman status:", error);
+    res.status(500).json({ message: "Failed to get deadman status" });
+  }
+});
+
+// Activate deadman switch (encrypted database)
+router.post("/activate", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const userEmail = req.user.email;
+    const { checkinMethod, checkinInterval, inactivityPeriod, password } =
+      req.body;
+
+    // Password required for encryption/decryption
+    if (!password) {
+      return res
+        .status(400)
+        .json({ message: "Password required for encryption" });
+    }
+
+    // Get user's salt and current encrypted data
+    const user = await userService.getUserById(userId);
+    const userData = await userService.getUserData(userId, password, user.salt);
+    const emails = userData.emails || [];
 
     // Calculate timer intervals
     const checkinIntervalMs = getIntervalMs(checkinInterval);
     const inactivityMs = getInactivityMs(inactivityPeriod);
 
-    // Store the deadman switch data
+    // Create encrypted deadman session in database
+    const sessionData = await userService.createDeadmanSession(userId, {
+      checkinInterval: checkinIntervalMs,
+      inactivityTimeout: inactivityMs,
+    });
+
+    // Store settings in encrypted user data
+    const updatedSettings = {
+      checkinMethod,
+      checkinInterval,
+      inactivityPeriod,
+      sessionToken: sessionData.sessionToken,
+    };
+
+    await userService.updateUserData(userId, password, user.salt, {
+      emails: emails,
+      settings: updatedSettings,
+      checkinTokens: userData.checkinTokens || {},
+    });
+
+    // Store the deadman switch data in memory for active timers
+    const now = Date.now();
     const switchData = {
       userEmail,
+      userId,
+      sessionToken: sessionData.sessionToken,
       settings: {
         checkinMethod,
         checkinInterval,
@@ -170,7 +527,8 @@ router.post("/activate", authenticateToken, (req, res) => {
         emails,
       },
       lastActivity: new Date(),
-      nextCheckinTime: new Date(Date.now() + checkinIntervalMs),
+      nextCheckin: now + checkinIntervalMs,
+      deadmanActivation: now + inactivityMs,
       checkinTimer: null,
       deadmanTimer: null,
     };
@@ -181,6 +539,9 @@ router.post("/activate", authenticateToken, (req, res) => {
         // Generate unique check-in token
         const checkinToken = crypto.randomBytes(32).toString("hex");
         checkinTokens.set(checkinToken, userEmail);
+
+        // Update session activity in database
+        await userService.updateSessionActivity(sessionData.sessionToken);
 
         // Send actual check-in email (non-blocking)
         emailService
@@ -288,7 +649,6 @@ router.post("/activate", authenticateToken, (req, res) => {
     res.status(200).json({
       success: true,
       message: "Deadman switch activated successfully",
-      testMode: TEST_MODE,
       settings: {
         checkinIntervalMinutes: checkinIntervalMs / 1000 / 60,
         deadmanTimerMinutes: inactivityMs / 1000 / 60,
@@ -382,7 +742,6 @@ router.get("/timer-status", authenticateToken, (req, res) => {
       nextCheckin: Math.max(0, nextCheckinTime - now),
       deadmanActivation: Math.max(0, deadmanActivationTime - now),
       lastActivity: switchData.lastActivity.toISOString(),
-      testMode: TEST_MODE,
       triggered: false,
     });
   } catch (error) {
@@ -431,44 +790,6 @@ router.get("/deadman-status", authenticateToken, (req, res) => {
   }
 });
 
-// Simple activation function (DISABLED IN PRODUCTION)
-router.post("/activate-simple", (req, res) => {
-  if (!TEST_MODE) {
-    return res.status(403).json({
-      message: "Simple activation not available in production mode",
-    });
-  }
-
-  try {
-    // Set 2-minute deadman timer
-    const deadmanTimer = setTimeout(
-      () => {
-        // Test deadman activation
-      },
-      2 * 60 * 1000,
-    );
-
-    // Set 1-minute check-in timer
-    const checkinTimer = setInterval(
-      () => {
-        // Test check-in reminder
-      },
-      1 * 60 * 1000,
-    );
-
-    res.json({
-      success: true,
-      message:
-        "Simple activation successful: 2-minute deadman timer, 1-minute check-ins",
-      deadmanMinutes: 2,
-      checkinMinutes: 1,
-    });
-  } catch (error) {
-    console.error("Error in simple activation:", error);
-    res.status(500).json({ message: "Simple activation failed" });
-  }
-});
-
 // Debug endpoint to check backend state
 router.get("/debug/status", (req, res) => {
   const switches = [];
@@ -483,7 +804,6 @@ router.get("/debug/status", (req, res) => {
   }
 
   res.json({
-    testMode: TEST_MODE,
     activeDeadmanSwitches: switches,
     userEmailsCount: userEmails.size,
     checkinTokensCount: checkinTokens.size,
@@ -574,36 +894,6 @@ router.post("/reset", authenticateToken, (req, res) => {
     console.error("Error resetting deadman data:", error);
     res.status(500).json({
       message: "Failed to reset deadman data",
-      error: error.message,
-    });
-  }
-});
-
-// Admin endpoint to wipe all user data (DISABLED IN PRODUCTION)
-router.post("/admin/wipe-all-data", (req, res) => {
-  if (!TEST_MODE) {
-    return res.status(403).json({
-      message: "Data wipe not available in production mode",
-    });
-  }
-
-  try {
-    // Clear all active deadman switches
-    for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-    }
-    activeDeadmanSwitches.clear();
-
-    res.json({
-      success: true,
-      message: "All user data has been wiped successfully",
-      clearedDeadmanSwitches: true,
-    });
-  } catch (error) {
-    console.error("Error wiping user data:", error);
-    res.status(500).json({
-      message: "Failed to wipe user data",
       error: error.message,
     });
   }

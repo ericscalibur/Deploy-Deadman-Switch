@@ -18,7 +18,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const email = document.getElementById("email").value;
       const password = document.getElementById("password").value;
       const mode = authButton.dataset.mode;
-      const url = mode === "login" ? "/auth/login" : "/auth/signup";
+      const url = mode === "login" ? "/deadman/login" : "/deadman/signup";
 
       try {
         const response = await fetch(url, {
@@ -32,8 +32,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await response.json();
 
         if (response.ok) {
-          // Store the token (e.g., in localStorage or a cookie)
-          localStorage.setItem("token", data.token);
+          // Store only the password for encryption (token is now in HTTP-only cookie)
+          localStorage.setItem("userPassword", password);
 
           if (mode === "signup") {
             // After successful signup, revert to login mode
@@ -112,9 +112,21 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Function to handle logout button click
   if (logoutButton) {
-    logoutButton.addEventListener("click", () => {
-      // Remove the token from localStorage
-      localStorage.removeItem("token");
+    logoutButton.addEventListener("click", async () => {
+      try {
+        // Call logout endpoint to clear HTTP-only cookie
+        await fetch("/deadman/logout", {
+          method: "POST",
+          credentials: "include", // Include cookies
+        });
+      } catch (error) {
+        console.error("Logout error:", error);
+      }
+
+      // Remove password from localStorage
+      localStorage.removeItem("userPassword");
+      localStorage.removeItem("deadmanSwitchActivated");
+      localStorage.removeItem("lastActivity");
 
       // Hide setup page and show login page
       setupPage.style.display = "none";
@@ -123,13 +135,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Reset form fields
       document.getElementById("email").value = "";
       document.getElementById("password").value = "";
-
-      // Reset to login mode
-      switchToLoginMode();
     });
   }
 
-  // Function to handle activation
+  // Function to handle deployment
   async function activateDeadmanSwitch() {
     // Validate that all required settings are selected
     const savedFormData = JSON.parse(
@@ -153,13 +162,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (emails.length === 0) {
       alert(
         "❌ NO BENEFICIARY EMAILS CONFIGURED!\n\n" +
-          "You must add at least one beneficiary email before activating the deadman switch.\n\n" +
+          "You must add at least one beneficiary email before deploying the deadman switch.\n\n" +
           "Steps:\n" +
           "1. Click '+New' button below\n" +
           "2. Enter the recipient's email address\n" +
           "3. Enter your message content\n" +
           "4. Save the email\n" +
-          "5. Then activate the deadman switch\n\n" +
+          "5. Then deploy the deadman switch\n\n" +
           "Without beneficiary emails, the deadman switch has no one to notify!",
       );
       return;
@@ -167,13 +176,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Additional validation: Check if emails were saved to backend
     try {
-      const token = localStorage.getItem("token");
-      const response = await fetch("/deadman/emails", {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
+      const password = localStorage.getItem("userPassword");
+      const response = await fetch(
+        `/deadman/emails?password=${encodeURIComponent(password)}`,
+        {
+          method: "GET",
+          credentials: "include", // Include HTTP-only cookie
         },
-      });
+      );
 
       if (response.ok) {
         const backendData = await response.json();
@@ -184,7 +194,7 @@ document.addEventListener("DOMContentLoaded", async () => {
               "Please:\n" +
               "1. Click '+New' to add emails again\n" +
               "2. Make sure they save successfully\n" +
-              "3. Then activate the deadman switch\n\n" +
+              "3. Then deploy the deadman switch\n\n" +
               "This ensures your beneficiary emails will be sent when needed.",
           );
           return;
@@ -194,9 +204,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Could not verify backend email storage
     }
 
-    // Confirm activation
+    // Confirm deployment
     const confirmed = confirm(
-      "Are you sure you want to activate the Deadman Switch?\n\n" +
+      "Are you sure you want to deploy the Deadman Switch?\n\n" +
         `• Check-in emails will be sent every ${savedFormData.checkinInterval.replace("-", " ")}\n` +
         `• If you don't respond for ${savedFormData.inactivityPeriod.replace("-", " ")}, your ${emails.length} configured email(s) will be sent\n\n` +
         "This will start immediately. Continue?",
@@ -205,24 +215,25 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!confirmed) return;
 
     try {
-      const token = localStorage.getItem("token");
+      const password = localStorage.getItem("userPassword");
       const response = await fetch("/deadman/activate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
+        credentials: "include", // Include HTTP-only cookie
         body: JSON.stringify({
           checkinMethod: savedFormData.checkinMethod,
           checkinInterval: savedFormData.checkinInterval,
           inactivityPeriod: savedFormData.inactivityPeriod,
+          password: password,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
         alert(
-          "Deadman Switch activated successfully! Check-in emails will begin shortly.",
+          "Deadman Switch deployed successfully! Check-in emails will begin shortly.",
         );
         // Set activation flag and restart timers with fresh data
         deadmanSwitchActivated = true;
@@ -234,13 +245,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else {
         const errorData = await response.json();
         alert(
-          "Failed to activate Deadman Switch: " +
+          "Failed to deploy Deadman Switch: " +
             (errorData.message || "Unknown error"),
         );
       }
     } catch (error) {
       console.error("Error activating deadman switch:", error);
-      alert("Failed to activate deadman switch");
+      alert("Failed to deploy deadman switch");
     }
   }
 
@@ -264,8 +275,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       const cell = document.createElement("td");
       cell.textContent =
         "No emails added yet. Click +New to add your first email.";
-      cell.style.fontStyle = "italic";
-      cell.style.color = "#666";
+      cell.className = "no-emails-cell";
+      cell.colSpan = 2; // Span both columns
       row.appendChild(cell);
       emailsTableBody.appendChild(row);
       return;
@@ -273,16 +284,81 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     emails.forEach((email, index) => {
       const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.textContent = `${index + 1}. ${email.address}`;
-      cell.style.cursor = "pointer";
-      cell.addEventListener("click", () => {
+
+      // Email info cell (clickable to edit)
+      const emailCell = document.createElement("td");
+      emailCell.textContent = `${index + 1}. ${email.address}`;
+      emailCell.className = "email-cell";
+      emailCell.addEventListener("click", () => {
         // Redirect to the edit email page with the email data
         window.location.href = `/edit-email.html?index=${index}`;
       });
-      row.appendChild(cell);
+
+      // Delete button cell
+      const deleteCell = document.createElement("td");
+      deleteCell.className = "delete-cell";
+
+      const deleteButton = document.createElement("button");
+      deleteButton.textContent = "Delete";
+      deleteButton.className = "email-delete-btn";
+      deleteButton.title = "Delete email";
+
+      deleteButton.addEventListener("click", async (e) => {
+        e.stopPropagation(); // Prevent triggering the row click
+
+        const confirmed = confirm(
+          `Are you sure you want to delete this email?\n\n${email.address}\n\nThis action cannot be undone.`,
+        );
+
+        if (confirmed) {
+          await deleteEmail(index);
+        }
+      });
+
+      deleteCell.appendChild(deleteButton);
+      row.appendChild(emailCell);
+      row.appendChild(deleteCell);
       emailsTableBody.appendChild(row);
     });
+  }
+
+  // Function to delete an email
+  async function deleteEmail(index) {
+    try {
+      const password = localStorage.getItem("userPassword");
+
+      // Delete from backend
+      const response = await fetch(`/deadman/emails/${index}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include", // Include HTTP-only cookie
+        body: JSON.stringify({
+          password: password,
+        }),
+      });
+
+      if (response.ok) {
+        // Remove from localStorage
+        const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+        emails.splice(index, 1);
+        localStorage.setItem("emails", JSON.stringify(emails));
+
+        // Refresh the table
+        loadEmails();
+
+        alert("Email deleted successfully!");
+      } else {
+        const errorData = await response.json();
+        alert(
+          "Failed to delete email: " + (errorData.message || "Unknown error"),
+        );
+      }
+    } catch (error) {
+      console.error("Error deleting email:", error);
+      alert("Failed to delete email");
+    }
   }
 
   // Load emails from localStorage and populate the table
@@ -425,7 +501,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         if (timeLeft <= 0) {
           deadmanElement.textContent = "ACTIVATED";
-          deadmanElement.style.color = "#d9534f";
+          deadmanElement.className = "deadman-activated";
         }
       }
     }
@@ -434,7 +510,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const lastActivityElement = document.getElementById("last-activity");
     if (lastActivityElement) {
       if (!deadmanSwitchActivated) {
-        lastActivityElement.textContent = "Not activated";
+        lastActivityElement.textContent = "Not deployed";
       } else {
         lastActivityElement.textContent = lastActivityTime.toLocaleString();
       }
@@ -444,28 +520,28 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to sync with backend timer status
   async function syncWithBackend() {
     try {
-      const token = localStorage.getItem("token");
-      if (!token) return;
-
       const response = await fetch("/deadman/timer-status", {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include", // Include HTTP-only cookie
       });
 
       if (response.ok) {
         const data = await response.json();
 
         if (data.active) {
+          // Debug logging
+          console.log("Backend sync data:", data);
+          console.log("Current time:", Date.now());
+          console.log("Next checkin timestamp:", data.nextCheckin);
+          console.log("Deadman activation timestamp:", data.deadmanActivation);
+
           // Update frontend with backend data
           deadmanSwitchActivated = true;
           lastActivityTime = new Date(data.lastActivity);
 
-          // Calculate timers based on backend data
-          const now = Date.now();
-          nextCheckinTime = now + data.nextCheckin;
-          deadmanActivationTime = now + data.deadmanActivation;
+          // Use absolute timestamps from backend data
+          nextCheckinTime = data.nextCheckin;
+          deadmanActivationTime = data.deadmanActivation;
 
           // Update localStorage to keep in sync
           localStorage.setItem("deadmanSwitchActivated", "true");
@@ -555,15 +631,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to send activity to backend
   async function sendActivityToBackend() {
     try {
-      const token = localStorage.getItem("token");
       await fetch("/deadman/activity", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
+        credentials: "include", // Include HTTP-only cookie
         body: JSON.stringify({
-          timestamp: lastActivityTime.toISOString(),
+          lastActivity: lastActivityTime.toISOString(),
         }),
       });
     } catch (error) {
@@ -587,26 +662,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Check if the user is already logged in (e.g., by checking for a token in localStorage)
-  const token = localStorage.getItem("token");
-  if (token) {
-    loginPage.style.display = "none";
-    setupPage.style.display = "block";
-    // Sync emails from localStorage to backend on login
-    await syncEmailsToBackend();
-    // Load emails when setup page is shown
-    loadEmails();
-    // Restore form selections
-    restoreFormSelections();
-    // Initialize countdown timers
-    loadSavedActivity();
-    if (deadmanSwitchActivated) {
-      // Check deadman status and update button accordingly
-      await checkDeadmanStatus();
+  // Check if the user is already logged in by trying to access a protected endpoint
+  try {
+    const response = await fetch("/deadman/status", {
+      method: "GET",
+      credentials: "include", // Include HTTP-only cookie
+    });
+
+    if (response.ok) {
+      // User is logged in
+      loginPage.style.display = "none";
+      setupPage.style.display = "block";
+      // Sync emails from localStorage to backend on login
+      await syncEmailsToBackend();
+      // Load emails when setup page is shown
+      loadEmails();
+      // Restore form selections
+      restoreFormSelections();
+      // Initialize countdown timers
+      loadSavedActivity();
+      if (deadmanSwitchActivated) {
+        // Check deadman status and update button accordingly
+        await checkDeadmanStatus();
+      }
+      await startCountdownTimers();
+    } else {
+      // User is not logged in
+      loginPage.style.display = "flex";
+      setupPage.style.display = "none";
     }
-    await startCountdownTimers();
-  } else {
-    loginPage.style.display = "block";
+  } catch (error) {
+    // Error checking auth status, show login page
+    loginPage.style.display = "flex";
     setupPage.style.display = "none";
   }
 
@@ -632,15 +719,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      const token = localStorage.getItem("token");
-
       // Get current backend emails
-      const getResponse = await fetch("/deadman/emails", {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
+      const password = localStorage.getItem("userPassword");
+      const getResponse = await fetch(
+        `/deadman/emails?password=${encodeURIComponent(password)}`,
+        {
+          method: "GET",
+          credentials: "include", // Include HTTP-only cookie
         },
-      });
+      );
 
       let backendEmails = [];
       if (getResponse.ok) {
@@ -661,16 +748,18 @@ document.addEventListener("DOMContentLoaded", async () => {
           );
 
           if (!exists) {
+            const password = localStorage.getItem("userPassword");
             const syncResponse = await fetch("/deadman/emails", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
               },
+              credentials: "include", // Include HTTP-only cookie
               body: JSON.stringify({
                 emailAddress: email.address,
                 emailContent: email.content,
                 emailIndex: null, // Add as new
+                password: password,
               }),
             });
 
@@ -690,12 +779,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to check if deadman switch was triggered
   async function checkDeadmanStatus() {
     try {
-      const token = localStorage.getItem("token");
       const response = await fetch("/deadman/deadman-status", {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include", // Include HTTP-only cookie
       });
 
       if (response.ok) {
@@ -732,19 +818,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     switch (state) {
       case "active":
         saveSettingsButton.textContent = "Deactivate Deadman Switch";
-        saveSettingsButton.style.backgroundColor = "#d9534f";
+        saveSettingsButton.className = "active-state";
         saveSettingsButton.onclick = deactivateDeadmanSwitch;
         break;
       case "triggered":
         saveSettingsButton.textContent = "Reset - Clear All Data";
-        saveSettingsButton.style.backgroundColor = "#f0ad4e";
+        saveSettingsButton.className = "triggered-state";
         saveSettingsButton.onclick = resetDeadmanData;
         break;
       case "inactive":
       default:
         saveSettingsButton.textContent =
-          "Save Settings & Activate Deadman Switch";
-        saveSettingsButton.style.backgroundColor = "#d9534f";
+          "Save Settings & Deploy Deadman Switch";
+        saveSettingsButton.className = "";
         saveSettingsButton.onclick = activateDeadmanSwitch;
         break;
     }
@@ -760,13 +846,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!confirmed) return;
 
     try {
-      const token = localStorage.getItem("token");
       const response = await fetch("/deadman/deactivate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include", // Include HTTP-only cookie
       });
 
       if (response.ok) {

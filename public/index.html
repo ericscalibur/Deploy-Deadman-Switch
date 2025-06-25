@@ -7,73 +7,59 @@
         <link rel="stylesheet" href="styles.css" />
     </head>
     <body>
-        <div id="login-page" class="container">
-            <h1>Login</h1>
-            <form id="login-form">
-                <label for="email">Email:</label>
-                <input
-                    type="email"
-                    id="email"
-                    name="email"
-                    required
-                /><br /><br />
+        <div id="login-page">
+            <div class="container">
+                <h1>Deploy</h1>
+                <form id="login-form">
+                    <label for="email">Email</label>
+                    <input
+                        type="email"
+                        id="email"
+                        name="email"
+                        placeholder="Enter your email"
+                        required
+                    />
 
-                <label for="password">Password:</label>
-                <input
-                    type="password"
-                    id="password"
-                    name="password"
-                    required
-                /><br /><br />
+                    <label for="password">Password</label>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        placeholder="Enter your password"
+                        required
+                    />
 
-                <button
-                    type="button"
-                    id="auth-button"
-                    data-mode="login"
-                    class="login-mode"
-                >
-                    Login
-                </button>
-            </form>
-            <p>
-                <a href="#" id="forgot-password-link">Forgot Password</a> |
-                <a href="#" id="signup-login-button">Sign Up</a>
-            </p>
+                    <button
+                        type="button"
+                        id="auth-button"
+                        data-mode="login"
+                        class="login-mode"
+                    >
+                        Login
+                    </button>
+                </form>
+                <p>
+                    <a href="#" id="forgot-password-link">Forgot Password</a> |
+                    <a href="#" id="signup-login-button">Sign Up</a>
+                </p>
+            </div>
         </div>
 
         <div id="setup-page" class="container" style="display: none">
-            <div
-                style="
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                "
-            >
-                <h1>Deadman Switch Set-Up</h1>
-                <button
-                    id="logout-button"
-                    style="
-                        background-color: #d9534f;
-                        color: white;
-                        padding: 8px 16px;
-                        border: none;
-                        border-radius: 4px;
-                        cursor: pointer;
-                    "
-                >
-                    Logout
-                </button>
+            <div class="setup-header">
+                <h1>Deploy: Deadman Switch</h1>
+                <button id="logout-button">Logout</button>
             </div>
             <p>
-                Welcome to Deploy: Deadman Switch service. Here’s how it works.
-                You will receive a Check-In at regular Intervals. When you
-                receive the email, open it and click on the link and it will
-                automatically log your activity. Additionally, if you log in to
-                your Deploy account, that activity is also logged. If the Period
-                of Inactivity elapses without any activity logged from your
-                Check-Ins, the Deadman Switch will activate and your emails will
-                be sent. All your data is encrypted until the final emails are
-                sent. You can send up to 20 emails.
+                &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
+                service. Here’s how it works. You will receive a Check-In at
+                regular Intervals. When you receive the email, open it and click
+                the link to automatically log your activity. Additionally, if
+                you log in to your Deploy account, that activity is also logged.
+                If the Period of Inactivity elapses without any activity logged,
+                the Deadman Switch will activate and your emails will be sent.
+                All your data is encrypted until the final emails are sent. You
+                can send up to 20 emails.
             </p>
 
             <form id="setup-form">
@@ -90,7 +76,7 @@
                 </fieldset>
 
                 <fieldset>
-                    <legend>Select your Interval to receive Check-Ins?</legend>
+                    <legend>Select your Interval to receive Check-Ins:</legend>
                     <input
                         type="radio"
                         id="1-minute"
@@ -176,125 +162,48 @@
                 </fieldset>
             </form>
 
-            <div
-                id="countdown-section"
-                style="
-                    margin: 30px 0;
-                    padding: 20px;
-                    background-color: #f9f9f9;
-                    border-radius: 8px;
-                "
-            >
+            <div id="countdown-section">
                 <h2>Status & Countdowns</h2>
 
-                <div
-                    style="
-                        display: flex;
-                        justify-content: space-between;
-                        gap: 20px;
-                    "
-                >
-                    <div
-                        style="
-                            flex: 1;
-                            text-align: center;
-                            padding: 15px;
-                            background-color: #dff0d8;
-                            border-radius: 5px;
-                            border: 1px solid #d6e9c6;
-                        "
-                    >
-                        <h3 style="margin-top: 0; color: #3c763d">
-                            Next Check-In
-                        </h3>
-                        <div
-                            id="checkin-countdown"
-                            style="
-                                font-size: 24px;
-                                font-weight: bold;
-                                color: #3c763d;
-                            "
-                        >
+                <div class="countdown-container">
+                    <div class="countdown-card checkin-card">
+                        <h3>Next Check-In</h3>
+                        <div id="checkin-countdown" class="countdown">
                             --:--:--
                         </div>
-                        <small style="color: #3c763d"
-                            >Time until next check-in email</small
-                        >
+                        <small>Time until next check-in email</small>
                     </div>
 
-                    <div
-                        style="
-                            flex: 1;
-                            text-align: center;
-                            padding: 15px;
-                            background-color: #fcf8e3;
-                            border-radius: 5px;
-                            border: 1px solid #faebcc;
-                        "
-                    >
-                        <h3 style="margin-top: 0; color: #8a6d3b">
-                            Deadman Switch
-                        </h3>
-                        <div
-                            id="deadman-countdown"
-                            style="
-                                font-size: 24px;
-                                font-weight: bold;
-                                color: #8a6d3b;
-                            "
-                        >
+                    <div class="countdown-card deadman-card">
+                        <h3>Deadman Switch</h3>
+                        <div id="deadman-countdown" class="countdown">
                             --:--:--
                         </div>
-                        <small style="color: #8a6d3b"
-                            >Time until activation (if no activity)</small
-                        >
+                        <small>Time until activation (if no activity)</small>
                     </div>
                 </div>
 
-                <div style="margin-top: 15px; text-align: center">
-                    <small style="color: #666">
+                <div class="activity-status">
+                    <small>
                         Last activity:
                         <span id="last-activity">Not recorded</span>
                     </small>
                 </div>
             </div>
 
-            <h2>Emails:</h2>
-            <table id="emails-table">
-                <thead>
-                    <tr>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-            <button id="new-email-button">+New</button>
-
-            <div
-                style="
-                    margin-top: 30px;
-                    text-align: center;
-                    padding: 20px;
-                    border-top: 2px solid #ddd;
-                "
-            >
-                <button
-                    id="save-settings-button"
-                    style="
-                        background-color: #d9534f;
-                        color: white;
-                        padding: 15px 30px;
-                        border: none;
-                        border-radius: 5px;
-                        cursor: pointer;
-                        font-size: 16px;
-                        font-weight: bold;
-                    "
-                >
-                    Save Settings & Activate Deadman Switch
+            <div id="emails-section">
+                <h2>Emails</h2>
+                <table id="emails-table">
+                    <tbody></tbody>
+                </table>
+                <button id="new-email-button">+ New</button>
+            </div>
+            <div class="settings-button-container">
+                <button id="save-settings-button">
+                    Save Settings & Deploy Deadman Switch
                 </button>
-                <p style="margin-top: 10px; color: #666; font-size: 14px">
-                    Warning: Once activated, check-in emails will begin
+                <p class="settings-warning">
+                    Warning: Once deployed, check-in emails will begin
                     immediately. Make sure all settings and emails are correct
                     before clicking.
                 </p>

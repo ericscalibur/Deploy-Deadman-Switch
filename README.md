@@ -10,7 +10,7 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 - 🔗 **One-Click Check-ins** - Simple email links to reset the deadman timer
 - 📱 **Real-time Dashboard** - Live countdown timers and status monitoring
 - 🧹 **Complete Data Lifecycle** - Automatic cleanup after activation
-- 🧪 **Test Mode** - Short intervals for testing (1 min check-ins, 3 min deadman)
+- ⚙️ **Flexible Intervals** - Configurable check-in and deadman timer periods
 
 ## How It Works
 
@@ -79,8 +79,8 @@ SMTP_PASS=your-smtp-password
 ```
 
 ### Timer Configuration
-- **Test Mode**: 1-minute check-ins, 3-minute deadman timer
-- **Production Mode**: 2 hours to 2 weeks check-ins, 1 day to 9 months deadman timer
+- **Check-in Intervals**: 1 minute to 2 weeks
+- **Deadman Timer**: 3 minutes to 9 months
 
 ## API Endpoints
 
@@ -98,8 +98,7 @@ SMTP_PASS=your-smtp-password
 - `GET /deadman/checkin/:token` - Process check-in from email link
 
 ### Admin/Debug
-- `GET /deadman/debug/status` - System status (test mode only)
-- `POST /deadman/admin/wipe-all-data` - Clear all data (test mode only)
+- `GET /deadman/debug/status` - System status
 
 ## Project Structure
 
@@ -134,18 +133,6 @@ Deploy/
 - **Token Expiration**: Check-in tokens are single-use and cleaned up
 
 ## Development
-
-### Test Mode
-Set `TEST_MODE = true` in `routes/deadman-minimal.js` for faster testing:
-- Check-in emails every 1 minute
-- Deadman activation after 3 minutes
-- Admin endpoints enabled
-
-### Production Mode
-Set `TEST_MODE = false` for production deployment:
-- Full timer intervals (hours/days/months)
-- Admin endpoints disabled
-- Optimized for real-world use
 
 ### Browser Console Commands
 Monitor backend state during development:

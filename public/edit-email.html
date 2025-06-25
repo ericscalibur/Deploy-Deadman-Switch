@@ -69,19 +69,20 @@
                     // Send the email data to the server to save or update
                     // the email. Include the emailIndex if it's an update.
                     try {
-                        const token = localStorage.getItem("token");
+                        const password = localStorage.getItem("userPassword");
                         const response = await fetch("/deadman/emails", {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
-                                Authorization: `Bearer ${token}`,
                             },
+                            credentials: "include", // Include HTTP-only cookie
                             body: JSON.stringify({
                                 emailAddress,
                                 emailContent,
                                 emailIndex: emailIndex
                                     ? parseInt(emailIndex)
                                     : null,
+                                password: password,
                             }),
                         });
 
@@ -110,10 +111,17 @@
                                 JSON.stringify(emails),
                             );
 
+                            // Show success message
+                            alert("Email saved successfully!");
+
                             // After saving, redirect back to the setup page
                             window.location.href = "/index.html";
                         } else {
-                            alert("Failed to save email");
+                            const errorData = await response.json();
+                            alert(
+                                "Failed to save email: " +
+                                    (errorData.message || "Unknown error"),
+                            );
                         }
                     } catch (error) {
                         console.error("Error saving email:", error);
