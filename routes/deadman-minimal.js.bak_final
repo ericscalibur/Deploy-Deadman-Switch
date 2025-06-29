@@ -566,6 +566,117 @@ router.post("/activate", authenticateToken, async (req, res) => {
           }
         }
 
+        // CRITICAL: Reset deadman timer when sending check-in email
+        if (switchData.deadmanTimer) {
+          clearTimeout(switchData.deadmanTimer);
+        }
+
+        // Recreate deadman timer with full inactivity period
+        const inactivityMs = getInactivityMs(
+          switchData.settings.inactivityPeriod,
+        );
+        switchData.deadmanTimer = setTimeout(async () => {
+          try {
+            // Get emails from both memory and switchData (fallback)
+            let emails = userEmails.get(userEmail) || [];
+            if (emails.length === 0 && switchData.settings.emails) {
+              emails = switchData.settings.emails;
+              console.log(
+                `Using fallback emails from switchData for ${userEmail}: ${emails.length} emails`,
+              );
+            }
+
+            console.log(
+              `Deadman timer expired for ${userEmail}, sending ${emails.length} emails`,
+            );
+
+            // Record activation immediately (before email sending)
+            deadmanActivationHistory.set(userEmail, {
+              triggered: true,
+              timestamp: new Date().toISOString(),
+              emailsSent: emails.length,
+              reason: "inactivity_timeout",
+              status: "pending",
+            });
+
+            if (emails.length === 0) {
+              console.error(
+                `No emails configured for deadman activation for ${userEmail}`,
+              );
+              deadmanActivationHistory.set(userEmail, {
+                triggered: true,
+                timestamp: new Date().toISOString(),
+                emailsSent: 0,
+                reason: "inactivity_timeout",
+                status: "no_emails_configured",
+              });
+            } else {
+              emailService
+                .sendDeadmanEmails(userEmail, emails)
+                .then((emailsSent) => {
+                  if (!emailsSent) {
+                    console.error(
+                      `Failed to send deadman emails for ${userEmail}`,
+                    );
+                    deadmanActivationHistory.set(userEmail, {
+                      triggered: true,
+                      timestamp: new Date().toISOString(),
+                      emailsSent: 0,
+                      reason: "inactivity_timeout",
+                      status: "email_failed",
+                    });
+                  } else {
+                    console.log(
+                      `Successfully sent deadman emails for ${userEmail}`,
+                    );
+                    deadmanActivationHistory.set(userEmail, {
+                      triggered: true,
+                      timestamp: new Date().toISOString(),
+                      emailsSent: emails.length,
+                      reason: "inactivity_timeout",
+                      status: "success",
+                    });
+                  }
+                })
+                .catch((error) => {
+                  console.error(
+                    `Error sending deadman emails for ${userEmail}:`,
+                    error,
+                  );
+                  deadmanActivationHistory.set(userEmail, {
+                    triggered: true,
+                    timestamp: new Date().toISOString(),
+                    emailsSent: 0,
+                    reason: "inactivity_timeout",
+                    status: "error",
+                    error: error.message,
+                  });
+                });
+            }
+
+            // Clean up after activation
+            const currentSwitchData = activeDeadmanSwitches.get(userEmail);
+            if (currentSwitchData && currentSwitchData.checkinTimer) {
+              clearInterval(currentSwitchData.checkinTimer);
+            }
+
+            // Clear all user data after deadman activation
+            userEmails.delete(userEmail);
+
+            // Clear any check-in tokens for this user
+            const tokensToDelete = [];
+            for (const [token, email] of checkinTokens.entries()) {
+              if (email === userEmail) {
+                tokensToDelete.push(token);
+              }
+            }
+            tokensToDelete.forEach((token) => checkinTokens.delete(token));
+
+            activeDeadmanSwitches.delete(userEmail);
+          } catch (error) {
+            console.error(`Error in deadman timer callback:`, error);
+          }
+        }, inactivityMs);
 
         // Send actual check-in email (non-blocking)
         emailService
@@ -590,7 +701,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
         switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
         // Deadman activation time should NOT be reset here
         console.log(
-          `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, deadman timer reset (${inactivityMs / 1000 / 60} minutes)`,
+          `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, check-in email sent - deadman timer NOT reset (${inactivityMs / 1000 / 60} minutes)`,
         );
       } catch (error) {
         console.error(`Error in check-in timer callback:`, error);
@@ -598,66 +709,105 @@ router.post("/activate", authenticateToken, async (req, res) => {
     }, checkinIntervalMs);
 
     // Set up deadman timer
+    console.log(
+      `⏰ CREATING deadman timer for ${userEmail} - will fire in ${inactivityMs}ms (${inactivityMs / 1000 / 60} minutes)`,
+    );
+    console.log(
+      `⏰ Deadman timer will fire at timestamp: ${Date.now() + inactivityMs}`,
+    );
     switchData.deadmanTimer = setTimeout(async () => {
       try {
-        // Send actual deadman emails (non-blocking)
-        emailService
-          .sendDeadmanEmails(userEmail, emails)
-          .then((emailsSent) => {
-            if (!emailsSent) {
-              console.error(`Failed to send deadman emails for ${userEmail}`);
-              // Still record activation even if email failed
+        console.log(`🚨 DEADMAN TIMER EXPIRED for ${userEmail}`);
+
+        // Get emails from both memory and switchData (fallback)
+        let deadmanEmails = userEmails.get(userEmail) || [];
+        if (deadmanEmails.length === 0 && switchData.settings.emails) {
+          deadmanEmails = switchData.settings.emails;
+          console.log(
+            `Using fallback emails from switchData for ${userEmail}: ${deadmanEmails.length} emails`,
+          );
+        }
+
+        console.log(
+          `Deadman timer expired for ${userEmail}, sending ${deadmanEmails.length} emails`,
+        );
+
+        // Clear check-in timer FIRST to stop further check-in emails
+        const currentSwitchData = activeDeadmanSwitches.get(userEmail);
+        if (currentSwitchData && currentSwitchData.checkinTimer) {
+          clearInterval(currentSwitchData.checkinTimer);
+          console.log(`🛑 STOPPED check-in timer for ${userEmail}`);
+        }
+
+        // Record activation immediately (before email sending)
+        deadmanActivationHistory.set(userEmail, {
+          triggered: true,
+          timestamp: new Date().toISOString(),
+          emailsSent: deadmanEmails.length,
+          reason: "inactivity_timeout",
+          status: "pending",
+        });
+
+        if (deadmanEmails.length === 0) {
+          console.error(
+            `❌ No emails configured for deadman activation for ${userEmail}`,
+          );
+          deadmanActivationHistory.set(userEmail, {
+            triggered: true,
+            timestamp: new Date().toISOString(),
+            emailsSent: 0,
+            reason: "inactivity_timeout",
+            status: "no_emails_configured",
+          });
+        } else {
+          // Send deadman emails
+          console.log(
+            `📧 Sending ${deadmanEmails.length} deadman emails for ${userEmail}`,
+          );
+          emailService
+            .sendDeadmanEmails(userEmail, deadmanEmails)
+            .then((emailsSent) => {
+              if (!emailsSent) {
+                console.error(
+                  `❌ Failed to send deadman emails for ${userEmail}`,
+                );
+                deadmanActivationHistory.set(userEmail, {
+                  triggered: true,
+                  timestamp: new Date().toISOString(),
+                  emailsSent: 0,
+                  reason: "inactivity_timeout",
+                  status: "email_failed",
+                });
+              } else {
+                console.log(
+                  `✅ Successfully sent deadman emails for ${userEmail}`,
+                );
+                deadmanActivationHistory.set(userEmail, {
+                  triggered: true,
+                  timestamp: new Date().toISOString(),
+                  emailsSent: deadmanEmails.length,
+                  reason: "inactivity_timeout",
+                  status: "success",
+                });
+              }
+            })
+            .catch((error) => {
+              console.error(
+                `❌ Error sending deadman emails for ${userEmail}:`,
+                error,
+              );
               deadmanActivationHistory.set(userEmail, {
                 triggered: true,
                 timestamp: new Date().toISOString(),
                 emailsSent: 0,
                 reason: "inactivity_timeout",
-                status: "email_failed",
+                status: "error",
+                error: error.message,
               });
-            } else {
-              // Record successful activation in history
-              deadmanActivationHistory.set(userEmail, {
-                triggered: true,
-                timestamp: new Date().toISOString(),
-                emailsSent: emails.length,
-                reason: "inactivity_timeout",
-                status: "success",
-              });
-            }
-          })
-          .catch((error) => {
-            console.error(
-              `Error sending deadman emails for ${userEmail}:`,
-              error,
-            );
-            // Record activation even if error occurred
-            deadmanActivationHistory.set(userEmail, {
-              triggered: true,
-              timestamp: new Date().toISOString(),
-              emailsSent: 0,
-              reason: "inactivity_timeout",
-              status: "error",
-              error: error.message,
             });
-          });
-
-        // Clean up after activation (do cleanup immediately)
-        // Clear check-in timer to stop further check-in emails
-        const switchData = activeDeadmanSwitches.get(userEmail);
-        if (switchData && switchData.checkinTimer) {
-          clearInterval(switchData.checkinTimer);
         }
 
-        // Record activation immediately (before email result)
-        deadmanActivationHistory.set(userEmail, {
-          triggered: true,
-          timestamp: new Date().toISOString(),
-          emailsSent: emails.length,
-          reason: "inactivity_timeout",
-          status: "pending",
-        });
-
-        // Clear all user data after deadman activation
+        // Clean up all user data after deadman activation
         userEmails.delete(userEmail);
 
         // Clear any check-in tokens for this user
@@ -669,11 +819,24 @@ router.post("/activate", authenticateToken, async (req, res) => {
         }
         tokensToDelete.forEach((token) => checkinTokens.delete(token));
 
+        // Remove the active switch
         activeDeadmanSwitches.delete(userEmail);
+        console.log(
+          `🧹 Cleaned up all data for ${userEmail} after deadman activation`,
+        );
       } catch (error) {
-        console.error(`Error in deadman timer callback:`, error);
+        console.error(
+          `❌ Error in deadman timer callback for ${userEmail}:`,
+          error,
+        );
       }
     }, inactivityMs);
+
+    console.log(`✅ Deadman timer created successfully for ${userEmail}`);
+    console.log(`   Timer ID: ${switchData.deadmanTimer}`);
+    console.log(
+      `   Will expire at: ${new Date(Date.now() + inactivityMs).toLocaleString()}`,
+    );
 
     // Store the active switch
     activeDeadmanSwitches.set(userEmail, switchData);
@@ -975,6 +1138,117 @@ router.get("/checkin/:token", async (req, res) => {
             }
           }
 
+          // CRITICAL: Reset deadman timer when sending check-in email
+          if (switchData.deadmanTimer) {
+            clearTimeout(switchData.deadmanTimer);
+          }
+
+          // Recreate deadman timer with full inactivity period
+          const inactivityMs = getInactivityMs(
+            switchData.settings.inactivityPeriod,
+          );
+          switchData.deadmanTimer = setTimeout(async () => {
+            try {
+              // Get emails from both memory and switchData (fallback)
+              let emails = userEmails.get(userEmail) || [];
+              if (emails.length === 0 && switchData.settings.emails) {
+                emails = switchData.settings.emails;
+                console.log(
+                  `Using fallback emails from switchData for ${userEmail}: ${emails.length} emails`,
+                );
+              }
+
+              console.log(
+                `Deadman timer expired for ${userEmail}, sending ${emails.length} emails`,
+              );
+
+              // Record activation immediately (before email sending)
+              deadmanActivationHistory.set(userEmail, {
+                triggered: true,
+                timestamp: new Date().toISOString(),
+                emailsSent: emails.length,
+                reason: "inactivity_timeout",
+                status: "pending",
+              });
+
+              if (emails.length === 0) {
+                console.error(
+                  `No emails configured for deadman activation for ${userEmail}`,
+                );
+                deadmanActivationHistory.set(userEmail, {
+                  triggered: true,
+                  timestamp: new Date().toISOString(),
+                  emailsSent: 0,
+                  reason: "inactivity_timeout",
+                  status: "no_emails_configured",
+                });
+              } else {
+                emailService
+                  .sendDeadmanEmails(userEmail, emails)
+                  .then((emailsSent) => {
+                    if (!emailsSent) {
+                      console.error(
+                        `Failed to send deadman emails for ${userEmail}`,
+                      );
+                      deadmanActivationHistory.set(userEmail, {
+                        triggered: true,
+                        timestamp: new Date().toISOString(),
+                        emailsSent: 0,
+                        reason: "inactivity_timeout",
+                        status: "email_failed",
+                      });
+                    } else {
+                      console.log(
+                        `Successfully sent deadman emails for ${userEmail}`,
+                      );
+                      deadmanActivationHistory.set(userEmail, {
+                        triggered: true,
+                        timestamp: new Date().toISOString(),
+                        emailsSent: emails.length,
+                        reason: "inactivity_timeout",
+                        status: "success",
+                      });
+                    }
+                  })
+                  .catch((error) => {
+                    console.error(
+                      `Error sending deadman emails for ${userEmail}:`,
+                      error,
+                    );
+                    deadmanActivationHistory.set(userEmail, {
+                      triggered: true,
+                      timestamp: new Date().toISOString(),
+                      emailsSent: 0,
+                      reason: "inactivity_timeout",
+                      status: "error",
+                      error: error.message,
+                    });
+                  });
+              }
+
+              // Clean up after activation
+              const currentSwitchData = activeDeadmanSwitches.get(userEmail);
+              if (currentSwitchData && currentSwitchData.checkinTimer) {
+                clearInterval(currentSwitchData.checkinTimer);
+              }
+
+              // Clear all user data after deadman activation
+              userEmails.delete(userEmail);
+
+              // Clear any check-in tokens for this user
+              const tokensToDelete = [];
+              for (const [token, email] of checkinTokens.entries()) {
+                if (email === userEmail) {
+                  tokensToDelete.push(token);
+                }
+              }
+              tokensToDelete.forEach((token) => checkinTokens.delete(token));
+
+              activeDeadmanSwitches.delete(userEmail);
+            } catch (error) {
+              console.error(`Error in deadman timer callback:`, error);
+            }
+          }, inactivityMs);
 
           emailService
             .sendCheckinEmail(userEmail, checkinToken)
@@ -998,7 +1272,7 @@ router.get("/checkin/:token", async (req, res) => {
           switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
           // Deadman activation time should NOT be reset here
           console.log(
-            `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, deadman timer reset (${inactivityMs / 1000 / 60} minutes)`,
+            `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, check-in email sent - deadman timer NOT reset (${inactivityMs / 1000 / 60} minutes)`,
           );
         } catch (error) {
           console.error(`Error in check-in timer callback:`, error);

@@ -10,9 +10,12 @@ class EmailService {
 
   async init() {
     try {
+      console.log("Initializing email service...");
+
       // For testing, use Ethereal Email (fake SMTP service)
       // In production, you'd use real SMTP credentials
       if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+        console.log("Using Gmail SMTP configuration");
         // Gmail SMTP configuration
         this.transporter = nodemailer.createTransport({
           service: "gmail",
@@ -26,6 +29,7 @@ class EmailService {
         process.env.SMTP_USER &&
         process.env.SMTP_PASS
       ) {
+        console.log("Using production SMTP configuration");
         // Production SMTP configuration
         this.transporter = nodemailer.createTransport({
           host: process.env.SMTP_HOST,
@@ -37,8 +41,10 @@ class EmailService {
           },
         });
       } else {
+        console.log("Using Ethereal test email configuration");
         // Test configuration using Ethereal Email
         const testAccount = await nodemailer.createTestAccount();
+        console.log("Test account created:", testAccount.user);
 
         this.transporter = nodemailer.createTransport({
           host: "smtp.ethereal.email",
@@ -51,9 +57,12 @@ class EmailService {
         });
       }
 
+      // Verify the connection
+      await this.transporter.verify();
       this.initialized = true;
+      console.log("✅ Email service initialized successfully");
     } catch (error) {
-      console.error("Failed to initialize email service:", error);
+      console.error("❌ Failed to initialize email service:", error);
       this.initialized = false;
     }
   }
@@ -66,6 +75,7 @@ class EmailService {
 
     try {
       const checkinUrl = `${process.env.APP_URL || "http://localhost:3000"}/deadman/checkin/${checkinToken}`;
+      console.log(`📧 Sending check-in email to ${userEmail}`);
 
       const mailOptions = {
         from: `"Deploy Deadman Switch" <${process.env.EMAIL_USER || "noreply@deploy-deadman.com"}>`,
@@ -100,27 +110,44 @@ This is an automated message from Deploy Deadman Switch.
       };
 
       const info = await this.transporter.sendMail(mailOptions);
+      console.log(
+        `✅ Check-in email sent successfully to ${userEmail}`,
+        info.messageId,
+      );
       return true;
     } catch (error) {
-      console.error("Failed to send check-in email:", error);
+      console.error(`❌ Failed to send check-in email to ${userEmail}:`, error);
       return false;
     }
   }
 
   async sendDeadmanEmails(userEmail, configuredEmails) {
     if (!this.initialized) {
+      console.log("❌ Email service not initialized for deadman emails");
       return false;
     }
 
     if (!configuredEmails || configuredEmails.length === 0) {
+      console.log(
+        `❌ No configured emails for deadman activation for ${userEmail}`,
+      );
       return false;
     }
 
+    console.log(
+      `🚨 Sending deadman emails for ${userEmail} to ${configuredEmails.length} recipients`,
+    );
+
     try {
       const sendPromises = configuredEmails.map(async (email, index) => {
+        const recipientEmail = email.to || email.address;
+        console.log(
+          `📧 Sending deadman email ${index + 1} to ${recipientEmail}`,
+        );
+
         const mailOptions = {
           from: `"${userEmail}" <noreply@deploy-deadman.com>`,
-          to: email.to || email.address,
+          to: recipientEmail,
           subject: email.subject || `Important Message from ${userEmail}`,
           html: `
             <h2>🚨 Important Message</h2>
@@ -151,9 +178,16 @@ Original sender: ${userEmail}
 
         try {
           const info = await this.transporter.sendMail(mailOptions);
+          console.log(
+            `✅ Deadman email ${index + 1} sent successfully to ${recipientEmail}`,
+            info.messageId,
+          );
           return { success: true, index, messageId: info.messageId };
         } catch (error) {
-          console.error(`Failed to send deadman email ${index + 1}:`, error);
+          console.error(
+            `❌ Failed to send deadman email ${index + 1} to ${recipientEmail}:`,
+            error,
+          );
           return { success: false, index, error: error.message };
         }
       });
@@ -161,9 +195,15 @@ Original sender: ${userEmail}
       const results = await Promise.all(sendPromises);
       const successCount = results.filter((r) => r.success).length;
 
+      console.log(
+        `📊 Deadman email results: ${successCount}/${configuredEmails.length} emails sent successfully`,
+      );
       return successCount > 0;
     } catch (error) {
-      console.error("Failed to send deadman emails:", error);
+      console.error(
+        `❌ Failed to send deadman emails for ${userEmail}:`,
+        error,
+      );
       return false;
     }
   }

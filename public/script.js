@@ -612,8 +612,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Start updating every second
     checkinInterval = setInterval(updateCountdowns, 1000);
 
-    // Sync with backend every 30 seconds to stay current
-    setInterval(syncWithBackend, 30000);
+    // Sync with backend every 5 seconds to stay current
+    setInterval(syncWithBackend, 5000);
+
+    // Sync immediately when page becomes visible (user returns from check-in)
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) {
+        console.log("Page became visible, syncing with backend...");
+        syncWithBackend();
+      }
+    });
   }
 
   // Function to log activity (resets deadman timer)
