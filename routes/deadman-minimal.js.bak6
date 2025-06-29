@@ -566,6 +566,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
           }
         }
 
+        }, inactivityMs);
 
         // Send actual check-in email (non-blocking)
         emailService
@@ -588,9 +589,8 @@ router.post("/activate", authenticateToken, async (req, res) => {
           nextCheckinNow + checkinIntervalMs,
         );
         switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-        // Deadman activation time should NOT be reset here
         console.log(
-          `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, deadman timer reset (${inactivityMs / 1000 / 60} minutes)`,
+          `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, check-in email sent (${inactivityMs / 1000 / 60} minutes)`,
         );
       } catch (error) {
         console.error(`Error in check-in timer callback:`, error);
@@ -975,35 +975,6 @@ router.get("/checkin/:token", async (req, res) => {
             }
           }
 
-
-          emailService
-            .sendCheckinEmail(userEmail, checkinToken)
-            .then((emailSent) => {
-              if (!emailSent) {
-                console.error(`Failed to send check-in email to ${userEmail}`);
-              }
-            })
-            .catch((error) => {
-              console.error(
-                `Error sending check-in email to ${userEmail}:`,
-                error,
-              );
-            });
-
-          // Update next check-in time
-          const nextCheckinNow = Date.now();
-          switchData.nextCheckinTime = new Date(
-            nextCheckinNow + checkinIntervalMs,
-          );
-          switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-          // Deadman activation time should NOT be reset here
-          console.log(
-            `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, deadman timer reset (${inactivityMs / 1000 / 60} minutes)`,
-          );
-        } catch (error) {
-          console.error(`Error in check-in timer callback:`, error);
-        }
-      }, checkinIntervalMs);
 
       // Recreate deadman timer
       const inactivityMs = getInactivityMs(
