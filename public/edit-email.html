@@ -19,6 +19,7 @@
                 /><br /><br />
 
                 <label for="email-content">Email Content:</label>
+                <br />
                 <textarea
                     id="email-content"
                     name="email-content"
@@ -124,7 +125,6 @@
                             );
                         }
                     } catch (error) {
-                        console.error("Error saving email:", error);
                         alert("Failed to save email");
                     }
                 });

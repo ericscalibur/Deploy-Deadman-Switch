@@ -63,7 +63,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           );
         }
       } catch (error) {
-        console.error(`Error during ${mode}:`, error);
         alert(`${mode === "login" ? "Login" : "Signup"} failed`);
       }
     });
@@ -119,9 +118,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           method: "POST",
           credentials: "include", // Include cookies
         });
-      } catch (error) {
-        console.error("Logout error:", error);
-      }
+      } catch (error) {}
 
       // Remove password from localStorage
       localStorage.removeItem("userPassword");
@@ -204,11 +201,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Could not verify backend email storage
     }
 
+    // Format intervals for display
+    const formatInterval = (interval) => {
+      if (!interval) return "unknown";
+      const [value, unit] = interval.split("-");
+      return `${value} ${unit}`;
+    };
+
     // Confirm deployment
     const confirmed = confirm(
       "Are you sure you want to deploy the Deadman Switch?\n\n" +
-        `• Check-in emails will be sent every ${savedFormData.checkinInterval.replace("-", " ")}\n` +
-        `• If you don't respond for ${savedFormData.inactivityPeriod.replace("-", " ")}, your ${emails.length} configured email(s) will be sent\n\n` +
+        `• Check-in emails will be sent every ${formatInterval(savedFormData.checkinInterval)}\n` +
+        `• If you don't respond for ${formatInterval(savedFormData.inactivityPeriod)}, your ${emails.length} configured email(s) will be sent\n\n` +
         "This will start immediately. Continue?",
     );
 
@@ -216,18 +220,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     try {
       const password = localStorage.getItem("userPassword");
+      const requestData = {
+        checkinMethod: savedFormData.checkinMethod,
+        checkinInterval: savedFormData.checkinInterval,
+        inactivityPeriod: savedFormData.inactivityPeriod,
+        password: password,
+      };
+
       const response = await fetch("/deadman/activate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         credentials: "include", // Include HTTP-only cookie
-        body: JSON.stringify({
-          checkinMethod: savedFormData.checkinMethod,
-          checkinInterval: savedFormData.checkinInterval,
-          inactivityPeriod: savedFormData.inactivityPeriod,
-          password: password,
-        }),
+        body: JSON.stringify(requestData),
       });
 
       if (response.ok) {
@@ -250,7 +256,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
       }
     } catch (error) {
-      console.error("Error activating deadman switch:", error);
       alert("Failed to deploy deadman switch");
     }
   }
@@ -356,7 +361,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
       }
     } catch (error) {
-      console.error("Error deleting email:", error);
       alert("Failed to delete email");
     }
   }
@@ -369,17 +373,23 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Function to save form selections
   function saveFormSelections() {
+    const checkinValue = document.getElementById("checkin-value")?.value;
+    const checkinUnit = document.getElementById("checkin-unit")?.value;
+    const inactivityValue = document.getElementById("inactivity-value")?.value;
+    const inactivityUnit = document.getElementById("inactivity-unit")?.value;
+
     const formData = {
       checkinMethod: document.querySelector(
         'input[name="checkin-method"]:checked',
       )?.value,
-      checkinInterval: document.querySelector(
-        'input[name="checkin-interval"]:checked',
-      )?.value,
-      inactivityPeriod: document.querySelector(
-        'input[name="inactivity-period"]:checked',
-      )?.value,
+      checkinInterval:
+        checkinValue && checkinUnit ? `${checkinValue}-${checkinUnit}` : null,
+      inactivityPeriod:
+        inactivityValue && inactivityUnit
+          ? `${inactivityValue}-${inactivityUnit}`
+          : null,
     };
+
     localStorage.setItem("formSelections", JSON.stringify(formData));
   }
 
@@ -397,17 +407,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (savedFormData.checkinInterval) {
-      const checkinIntervalInput = document.querySelector(
-        `input[name="checkin-interval"][value="${savedFormData.checkinInterval}"]`,
-      );
-      if (checkinIntervalInput) checkinIntervalInput.checked = true;
+      const [value, unit] = savedFormData.checkinInterval.split("-");
+      const checkinValueInput = document.getElementById("checkin-value");
+      const checkinUnitInput = document.getElementById("checkin-unit");
+      if (checkinValueInput && value) checkinValueInput.value = value;
+      if (checkinUnitInput && unit) checkinUnitInput.value = unit;
     }
 
     if (savedFormData.inactivityPeriod) {
-      const inactivityPeriodInput = document.querySelector(
-        `input[name="inactivity-period"][value="${savedFormData.inactivityPeriod}"]`,
-      );
-      if (inactivityPeriodInput) inactivityPeriodInput.checked = true;
+      const [value, unit] = savedFormData.inactivityPeriod.split("-");
+      const inactivityValueInput = document.getElementById("inactivity-value");
+      const inactivityUnitInput = document.getElementById("inactivity-unit");
+      if (inactivityValueInput && value) inactivityValueInput.value = value;
+      if (inactivityUnitInput && unit) inactivityUnitInput.value = unit;
     }
   }
 
@@ -424,38 +436,41 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Function to get interval in milliseconds based on user selection
   function getIntervalMs(intervalValue) {
-    switch (intervalValue) {
-      case "1-minute":
-        return 1 * 60 * 1000; // 1 minute (testing)
-      case "2-hours":
-        return 2 * 60 * 60 * 1000;
-      case "2-days":
-        return 2 * 24 * 60 * 60 * 1000;
-      case "2-weeks":
-        return 2 * 7 * 24 * 60 * 60 * 1000;
-      default:
-        return 2 * 60 * 60 * 1000; // Default to 2 hours
-    }
+    if (!intervalValue) return 2 * 60 * 60 * 1000; // Default to 2 hours
+
+    const [value, unit] = intervalValue.split("-");
+    const numValue = parseInt(value, 10);
+
+    if (isNaN(numValue) || numValue < 1) return 2 * 60 * 60 * 1000;
+
+    const multipliers = {
+      minutes: 60 * 1000,
+      hours: 60 * 60 * 1000,
+      days: 24 * 60 * 60 * 1000,
+      weeks: 7 * 24 * 60 * 60 * 1000,
+    };
+
+    return numValue * (multipliers[unit] || multipliers.hours);
   }
 
   // Function to get inactivity period in milliseconds based on user selection
   function getInactivityMs(periodValue) {
-    switch (periodValue) {
-      case "3-minutes":
-        return 3 * 60 * 1000; // 3 minutes (testing)
-      case "1-day":
-        return 1 * 24 * 60 * 60 * 1000;
-      case "1-month":
-        return 30 * 24 * 60 * 60 * 1000;
-      case "3-months":
-        return 3 * 30 * 24 * 60 * 60 * 1000;
-      case "6-months":
-        return 6 * 30 * 24 * 60 * 60 * 1000;
-      case "9-months":
-        return 9 * 30 * 24 * 60 * 60 * 1000;
-      default:
-        return 1 * 24 * 60 * 60 * 1000; // Default to 1 day
-    }
+    if (!periodValue) return 1 * 24 * 60 * 60 * 1000; // Default to 1 day
+
+    const [value, unit] = periodValue.split("-");
+    const numValue = parseInt(value, 10);
+
+    if (isNaN(numValue) || numValue < 1) return 1 * 24 * 60 * 60 * 1000;
+
+    const multipliers = {
+      minutes: 60 * 1000,
+      hours: 60 * 60 * 1000,
+      days: 24 * 60 * 60 * 1000,
+      weeks: 7 * 24 * 60 * 60 * 1000,
+      months: 30 * 24 * 60 * 60 * 1000,
+    };
+
+    return numValue * (multipliers[unit] || multipliers.days);
   }
 
   // Function to format time as HH:MM:SS
@@ -529,12 +544,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await response.json();
 
         if (data.active) {
-          // Debug logging
-          console.log("Backend sync data:", data);
-          console.log("Current time:", Date.now());
-          console.log("Next checkin timestamp:", data.nextCheckin);
-          console.log("Deadman activation timestamp:", data.deadmanActivation);
-
           // Update frontend with backend data
           deadmanSwitchActivated = true;
           lastActivityTime = new Date(data.lastActivity);
@@ -559,11 +568,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       } else {
         const errorText = await response.text();
-        console.error("Timer-status error:", response.status, errorText);
       }
-    } catch (error) {
-      console.error("Sync error:", error);
-    }
+    } catch (error) {}
   }
 
   // Function to calculate next check-in time
@@ -571,6 +577,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const savedFormData = JSON.parse(
       localStorage.getItem("formSelections") || "{}",
     );
+
     if (savedFormData.checkinInterval) {
       const intervalMs = getIntervalMs(savedFormData.checkinInterval);
       nextCheckinTime = new Date().getTime() + intervalMs;
@@ -618,7 +625,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Sync immediately when page becomes visible (user returns from check-in)
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden) {
-        console.log("Page became visible, syncing with backend...");
         syncWithBackend();
       }
     });
@@ -709,7 +715,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("change", async (event) => {
     if (
       event.target.matches(
-        'input[name="checkin-method"], input[name="checkin-interval"], input[name="inactivity-period"]',
+        'input[name="checkin-method"], #checkin-value, #checkin-unit, #inactivity-value, #inactivity-unit',
       )
     ) {
       saveFormSelections();
@@ -772,14 +778,11 @@ document.addEventListener("DOMContentLoaded", async () => {
             });
 
             if (!syncResponse.ok) {
-              console.error(`Failed to sync email ${i + 1} to backend`);
             }
           }
         }
       }
-    } catch (error) {
-      console.error("Error syncing emails to backend:", error);
-    }
+    } catch (error) {}
   }
 
   // Add comprehensive activity tracking
@@ -814,9 +817,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           updateButtonState("inactive");
         }
       }
-    } catch (error) {
-      console.error("Error checking deadman status:", error);
-    }
+    } catch (error) {}
   }
 
   // Function to update button state based on deadman status
@@ -876,7 +877,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         alert(data.message || "Failed to deactivate deadman switch");
       }
     } catch (error) {
-      console.error("Error deactivating deadman switch:", error);
       alert("Failed to deactivate deadman switch");
     }
   }
@@ -934,7 +934,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
       }
     } catch (error) {
-      console.error("Error resetting deadman data:", error);
       alert("Failed to reset deadman data");
     }
   }
