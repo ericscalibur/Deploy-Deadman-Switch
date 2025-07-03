@@ -175,6 +175,75 @@ body {
     margin-right: 5px;
 }
 
+/* Interval input styling */
+.interval-input {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+    flex-wrap: wrap;
+}
+
+.interval-input label {
+    color: ghostwhite;
+    font-weight: 500;
+    min-width: fit-content;
+}
+
+.interval-input input[type="number"] {
+    width: 80px;
+    padding: 8px 12px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    font-size: 16px;
+    text-align: center;
+    background: white;
+    color: #333;
+    transition:
+        border-color 0.3s ease,
+        box-shadow 0.3s ease;
+}
+
+.interval-input input[type="number"]:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.interval-input select {
+    padding: 8px 12px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    font-size: 16px;
+    background: white;
+    color: #333;
+    cursor: pointer;
+    transition:
+        border-color 0.3s ease,
+        box-shadow 0.3s ease;
+    min-width: 100px;
+}
+
+.interval-input select:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+@media (max-width: 480px) {
+    .interval-input {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .interval-input input[type="number"],
+    .interval-input select {
+        width: 100%;
+        max-width: 200px;
+    }
+}
+
 #setup-page h2 {
     color: #333;
     margin: auto;
@@ -215,6 +284,23 @@ body {
     border: none;
     border-radius: 4px;
     cursor: pointer;
+}
+
+#new-email-button:hover {
+    background-color: #46b8da;
+}
+
+#save-email-button {
+    background-color: #5bc0de;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#save-email-button:hover {
+    background-color: #46b8da;
 }
 
 #new-email-button:hover {
@@ -313,6 +399,9 @@ body {
     color: #8a6d3b;
 }
 
+#save-email-button {
+}
+
 #save-settings-button:hover {
     background-color: #2e8b57 !important; /* darker seagreen */
     transform: translateY(-2px);
@@ -408,6 +497,8 @@ body {
 /* Activated text styling */
 .deadman-activated {
     color: #d9534f;
+    font-size: 24px;
+    font-weight: bold;
 }
 
 /* Mobile stacking for countdown cards */

@@ -97,7 +97,6 @@ if (
     });
   } catch (error) {
     console.error("SSL certificate error:", error.message);
-    console.log("Falling back to HTTP server...");
     app.listen(port, () => {
       console.log(`Server is running on HTTP port ${port}`);
     });
@@ -108,11 +107,6 @@ if (
     console.log(`Server is running on port ${port}`);
   });
 }
-
-// Keep the process alive
-const keepAliveInterval = setInterval(() => {
-  // This prevents the process from exiting
-}, 1000);
 
 process.on("uncaughtException", (error) => {
   console.error("Uncaught Exception:", error);
@@ -125,5 +119,5 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 process.on("exit", (code) => {
-  clearInterval(keepAliveInterval);
+  console.log(`Process exiting with code: ${code}`);
 });

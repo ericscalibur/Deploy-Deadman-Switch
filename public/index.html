@@ -76,89 +76,56 @@
                 </fieldset>
 
                 <fieldset>
-                    <legend>Select your Interval to receive Check-Ins:</legend>
-                    <input
-                        type="radio"
-                        id="1-minute"
-                        name="checkin-interval"
-                        value="1-minute"
-                    />
-                    <label for="1-minute">1 Minute (Testing)</label><br />
-
-                    <input
-                        type="radio"
-                        id="2-hours"
-                        name="checkin-interval"
-                        value="2-hours"
-                    />
-                    <label for="2-hours">2 Hours</label><br />
-
-                    <input
-                        type="radio"
-                        id="2-days"
-                        name="checkin-interval"
-                        value="2-days"
-                    />
-                    <label for="2-days">2 Days</label><br />
-
-                    <input
-                        type="radio"
-                        id="2-weeks"
-                        name="checkin-interval"
-                        value="2-weeks"
-                    />
-                    <label for="2-weeks">2 Weeks</label><br />
+                    <legend>Set your Check-In Interval:</legend>
+                    <div class="interval-input">
+                        <label for="checkin-value">Every</label>
+                        <input
+                            type="number"
+                            id="checkin-value"
+                            name="checkin-value"
+                            min="1"
+                            max="999"
+                            value="2"
+                            required
+                        />
+                        <select id="checkin-unit" name="checkin-unit" required>
+                            <option value="minutes">Minutes</option>
+                            <option value="hours" selected>Hours</option>
+                            <option value="days">Days</option>
+                            <option value="weeks">Weeks</option>
+                        </select>
+                        <span>you will receive a Check-In email</span>
+                    </div>
                 </fieldset>
 
                 <fieldset>
-                    <legend>Select your Period of Inactivity:</legend>
-                    <input
-                        type="radio"
-                        id="3-minutes"
-                        name="inactivity-period"
-                        value="3-minutes"
-                    />
-                    <label for="3-minutes">3 Minutes (Testing)</label><br />
-
-                    <input
-                        type="radio"
-                        id="1-day"
-                        name="inactivity-period"
-                        value="1-day"
-                    />
-                    <label for="1-day">1 Day</label><br />
-
-                    <input
-                        type="radio"
-                        id="1-month"
-                        name="inactivity-period"
-                        value="1-month"
-                    />
-                    <label for="1-month">1 Month</label><br />
-
-                    <input
-                        type="radio"
-                        id="3-months"
-                        name="inactivity-period"
-                        value="3-months"
-                    />
-                    <label for="3-months">3 Months</label><br />
-
-                    <input
-                        type="radio"
-                        id="6-months"
-                        name="inactivity-period"
-                        value="6-months"
-                    />
-                    <label for="6-months">6 Months</label><br />
-
-                    <input
-                        type="radio"
-                        id="9-months"
-                        name="inactivity-period"
-                        value="9-months"
-                    />
-                    <label for="9-months">9 Months</label><br />
+                    <legend>Set your Period of Inactivity:</legend>
+                    <div class="interval-input">
+                        <label for="inactivity-value"
+                            >If no activity within</label
+                        >
+                        <input
+                            type="number"
+                            id="inactivity-value"
+                            name="inactivity-value"
+                            min="1"
+                            max="999"
+                            value="1"
+                            required
+                        />
+                        <select
+                            id="inactivity-unit"
+                            name="inactivity-unit"
+                            required
+                        >
+                            <option value="minutes">Minutes</option>
+                            <option value="hours">Hours</option>
+                            <option value="days" selected>Days</option>
+                            <option value="weeks">Weeks</option>
+                            <option value="months">Months</option>
+                        </select>
+                        <span>Deadman Switch will activate</span>
+                    </div>
                 </fieldset>
             </form>
 
