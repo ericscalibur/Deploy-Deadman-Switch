@@ -473,17 +473,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     return numValue * (multipliers[unit] || multipliers.days);
   }
 
-  // Function to format time as HH:MM:SS
+  // Function to format time as DDD:HH:mm:ss for periods over 24 hours, or HH:mm:ss for shorter periods
   function formatTime(ms) {
     if (ms <= 0) return "00:00:00";
 
     const totalSeconds = Math.floor(ms / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
 
-    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+    // If less than 24 hours, show HH:mm:ss format
+    if (days === 0) {
+      return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+    }
+
+    // For 24+ hours, show DDD:HH:mm:ss format
+    return `${days.toString().padStart(3, "0")}:${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
   }
+
+  // Test timer formatting (can be removed after verification)
+  console.log("🧪 Timer format tests:");
+  console.log("2 hours:", formatTime(2 * 60 * 60 * 1000)); // Should show 02:00:00
+  console.log("1 day:", formatTime(24 * 60 * 60 * 1000)); // Should show 001:00:00:00
+  console.log("1 week:", formatTime(7 * 24 * 60 * 60 * 1000)); // Should show 007:00:00:00
+  console.log("1 month:", formatTime(30 * 24 * 60 * 60 * 1000)); // Should show 030:00:00:00
 
   // Function to update countdown displays
   function updateCountdowns() {
@@ -826,15 +840,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     switch (state) {
       case "active":
-        saveSettingsButton.textContent = "Deactivate Deadman Switch";
+        saveSettingsButton.textContent = "Abort";
         saveSettingsButton.className = "active-state";
         saveSettingsButton.onclick = deactivateDeadmanSwitch;
         break;
-      case "triggered":
-        saveSettingsButton.textContent = "Reset - Clear All Data";
-        saveSettingsButton.className = "triggered-state";
-        saveSettingsButton.onclick = resetDeadmanData;
-        break;
+
       case "inactive":
       default:
         saveSettingsButton.textContent =
