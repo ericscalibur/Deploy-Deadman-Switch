@@ -65,6 +65,23 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 
 ## Configuration
 
+### SECRET_KEY Setup
+The `SECRET_KEY` is used to sign JWT tokens for user authentication. It must be a secure, random string.
+
+**Important**: Never share or commit your `SECRET_KEY` to version control!
+
+1. **Generate automatically** (recommended):
+   ```bash
+   python3 generate_secret.py
+   ```
+   This creates a `.env` file with a cryptographically secure 64-character key.
+
+2. **Generate manually** (alternative):
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+   ```
+   Copy the output to your `.env` file as `SECRET_KEY=your-generated-key`
+
 ### Email Setup (Gmail)
 1. Enable 2-factor authentication on your Google account
 2. Generate an App Password: Google Account → Security → App Passwords
