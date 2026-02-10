@@ -61,6 +61,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 
+// Health check endpoint for Docker/Start9
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    service: "deadman-switch",
+  });
+});
+
 // Routes
 app.use("/auth", authRoutes);
 app.use("/deadman", deadmanRoutes);

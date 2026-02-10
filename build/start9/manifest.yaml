@@ -1,0 +1,111 @@
+id: deadman-switch
+title: Deadman Switch
+version: 1.0.0
+release-notes: |
+  - Initial release of Deadman Switch for Start9
+  - Secure web-based deadman switch with email notifications
+  - JWT authentication and encrypted data storage
+  - Configurable check-in intervals and inactivity periods
+license: MIT
+wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
+upstream-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
+support-site: https://github.com/ericscalibur/Deploy-Deadman-Switch/issues
+marketing-site: https://github.com/ericscalibur/Deploy-Deadman-Switch
+donation-url: ~
+build: ["make"]
+description:
+  short: Automated email deadman switch service
+  long: |
+    A secure, web-based deadman switch service that automatically sends pre-configured emails
+    to designated recipients if you fail to check in within a specified time period. Features
+    include JWT authentication, encrypted data storage, configurable timers, and one-click
+    email check-ins.
+
+assets:
+  license: LICENSE
+  icon: icon.png
+  instructions: instructions.md
+
+main:
+  type: docker
+  image: main
+  entrypoint: docker_entrypoint.sh
+  args: []
+  mounts:
+    main: /app/data
+    cert: /mnt/cert
+
+health-checks:
+  web-ui:
+    name: Web Interface
+    success-message: Deadman Switch is ready for configuration
+    type: docker
+    image: main
+    entrypoint: check-web.sh
+    args: []
+    io-format: json
+    inject: true
+
+config:
+  get:
+    type: docker
+    image: main
+    entrypoint: configurator.sh
+    args: ["get"]
+    io-format: yaml
+  set:
+    type: docker
+    image: main
+    entrypoint: configurator.sh
+    args: ["set"]
+    io-format: yaml
+
+properties:
+  type: docker
+  image: main
+  entrypoint: properties.sh
+  args: []
+  io-format: json
+
+volumes:
+  main:
+    type: data
+  cert:
+    type: certificate
+    interface-id: main
+
+interfaces:
+  main:
+    name: Web Interface
+    description: Main web interface for configuring and monitoring the deadman switch
+    tor-config:
+      port-mapping:
+        80: "3000"
+    lan-config:
+      443:
+        ssl: true
+        internal: 3000
+    ui: true
+    protocols:
+      - tcp
+      - http
+
+dependencies: {}
+
+backup:
+  create:
+    type: docker
+    image: main
+    entrypoint: backup.sh
+    args: ["create"]
+    io-format: yaml
+  restore:
+    type: docker
+    image: main
+    entrypoint: backup.sh
+    args: ["restore"]
+    io-format: yaml
+
+migrations:
+  from: {}
+  to: {}
