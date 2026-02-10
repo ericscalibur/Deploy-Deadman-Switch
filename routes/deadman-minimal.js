@@ -37,6 +37,26 @@ function getIntervalMs(intervalValue) {
     return 2 * 60 * 60 * 1000; // Default
   }
 
+  // Granular value constraints based on unit type
+  const unitConstraints = {
+    minute: { max: 60, name: "minutes" },
+    minutes: { max: 60, name: "minutes" },
+    hour: { max: 24, name: "hours" },
+    hours: { max: 24, name: "hours" },
+    day: { max: 365, name: "days" },
+    days: { max: 365, name: "days" },
+    week: { max: 52, name: "weeks" },
+    weeks: { max: 52, name: "weeks" },
+  };
+
+  // Check unit-specific constraints
+  if (unitConstraints[unit] && value > unitConstraints[unit].max) {
+    console.warn(
+      `Check-in interval value ${value} exceeds maximum of ${unitConstraints[unit].max} for ${unitConstraints[unit].name}`,
+    );
+    return 2 * 60 * 60 * 1000; // Default to 2 hours
+  }
+
   const multipliers = {
     minute: 60 * 1000,
     minutes: 60 * 1000,
@@ -90,6 +110,28 @@ function getInactivityMs(periodValue) {
 
   if (isNaN(value) || value < 1) return 24 * 60 * 60 * 1000; // Default
 
+  // Granular value constraints based on unit type
+  const unitConstraints = {
+    minute: { max: 60, name: "minutes" },
+    minutes: { max: 60, name: "minutes" },
+    hour: { max: 24, name: "hours" },
+    hours: { max: 24, name: "hours" },
+    day: { max: 365, name: "days" },
+    days: { max: 365, name: "days" },
+    week: { max: 52, name: "weeks" },
+    weeks: { max: 52, name: "weeks" },
+    month: { max: 12, name: "months" },
+    months: { max: 12, name: "months" },
+  };
+
+  // Check unit-specific constraints
+  if (unitConstraints[unit] && value > unitConstraints[unit].max) {
+    console.warn(
+      `Inactivity period value ${value} exceeds maximum of ${unitConstraints[unit].max} for ${unitConstraints[unit].name}`,
+    );
+    return 24 * 60 * 60 * 1000; // Default to 1 day
+  }
+
   const multipliers = {
     minute: 60 * 1000,
     minutes: 60 * 1000,
@@ -117,6 +159,70 @@ function getInactivityMs(periodValue) {
   }
 
   return ms;
+}
+
+// Function to validate time interval values based on unit constraints
+function validateTimeInterval(intervalValue, isInactivityPeriod = false) {
+  if (!intervalValue) {
+    return { isValid: false, error: "Interval value is required" };
+  }
+
+  const parts = intervalValue.split("-");
+  if (parts.length !== 2) {
+    return {
+      isValid: false,
+      error: "Invalid format. Use 'value-unit' format (e.g., '2-hours')",
+    };
+  }
+
+  const value = parseInt(parts[0], 10);
+  const unit = parts[1];
+
+  if (isNaN(value) || value < 1) {
+    return { isValid: false, error: "Value must be a positive number" };
+  }
+
+  // Define constraints for each unit type
+  const unitConstraints = {
+    minute: { max: 60, name: "minutes" },
+    minutes: { max: 60, name: "minutes" },
+    hour: { max: 24, name: "hours" },
+    hours: { max: 24, name: "hours" },
+    day: { max: 365, name: "days" },
+    days: { max: 365, name: "days" },
+    week: { max: 52, name: "weeks" },
+    weeks: { max: 52, name: "weeks" },
+    month: { max: 12, name: "months" },
+    months: { max: 12, name: "months" },
+  };
+
+  // Check if unit is valid
+  if (!unitConstraints[unit]) {
+    return {
+      isValid: false,
+      error: `Invalid unit '${unit}'. Valid units are: minutes, hours, days, weeks${isInactivityPeriod ? ", months" : ""}`,
+    };
+  }
+
+  // Check if months are allowed (only for inactivity period)
+  if ((unit === "month" || unit === "months") && !isInactivityPeriod) {
+    return {
+      isValid: false,
+      error:
+        "Months are only allowed for inactivity periods, not check-in intervals",
+    };
+  }
+
+  // Check unit-specific constraints
+  const constraint = unitConstraints[unit];
+  if (value > constraint.max) {
+    return {
+      isValid: false,
+      error: `Maximum value for ${constraint.name} is ${constraint.max}. You entered ${value}.`,
+    };
+  }
+
+  return { isValid: true };
 }
 
 // Initialize database service
@@ -947,6 +1053,22 @@ router.post("/activate", authenticateToken, async (req, res) => {
     const user = await userService.getUserById(userId);
     const userData = await userService.getUserData(userId, password, user.salt);
     const emails = userData.emails || [];
+
+    // Validate check-in interval
+    const checkinValidation = validateTimeInterval(checkinInterval, false);
+    if (!checkinValidation.isValid) {
+      return res.status(400).json({
+        message: `Invalid check-in interval: ${checkinValidation.error}`,
+      });
+    }
+
+    // Validate inactivity period
+    const inactivityValidation = validateTimeInterval(inactivityPeriod, true);
+    if (!inactivityValidation.isValid) {
+      return res.status(400).json({
+        message: `Invalid inactivity period: ${inactivityValidation.error}`,
+      });
+    }
 
     // Calculate timer intervals
     console.log(`🔍 DEBUG: Received checkinInterval: "${checkinInterval}"`);
@@ -2635,6 +2757,27 @@ router.post("/force-clear", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("❌ FORCE-CLEAR ERROR:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Test endpoint for time interval validation
+router.post("/test/validate-interval", (req, res) => {
+  const { interval, isInactivityPeriod = false } = req.body;
+
+  try {
+    const validation = validateTimeInterval(interval, isInactivityPeriod);
+
+    res.json({
+      success: true,
+      interval: interval,
+      isInactivityPeriod: isInactivityPeriod,
+      validation: validation,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 });
 

@@ -725,6 +725,69 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupPage.style.display = "none";
   }
 
+  // Value constraints for different units
+  const unitConstraints = {
+    minutes: { max: 60, name: "minutes" },
+    hours: { max: 24, name: "hours" },
+    days: { max: 365, name: "days" },
+    weeks: { max: 52, name: "weeks" },
+    months: { max: 12, name: "months" },
+  };
+
+  // Function to validate and enforce value constraints
+  function validateTimeInput(inputElement, unitElement) {
+    const value = parseInt(inputElement.value);
+    const unit = unitElement.value;
+    const constraint = unitConstraints[unit];
+
+    // Update max attribute dynamically based on selected unit
+    if (constraint) {
+      inputElement.setAttribute("max", constraint.max);
+
+      if (value > constraint.max) {
+        alert(
+          `Maximum value for ${constraint.name} is ${constraint.max}. Setting to maximum.`,
+        );
+        inputElement.value = constraint.max;
+      }
+    }
+
+    if (value < 1) {
+      alert("Minimum value is 1. Setting to minimum.");
+      inputElement.value = 1;
+    }
+  }
+
+  // Add event listeners for input validation
+  const checkinValueInput = document.getElementById("checkin-value");
+  const checkinUnitInput = document.getElementById("checkin-unit");
+  const inactivityValueInput = document.getElementById("inactivity-value");
+  const inactivityUnitInput = document.getElementById("inactivity-unit");
+
+  if (checkinValueInput && checkinUnitInput) {
+    // Initialize max attribute on page load
+    validateTimeInput(checkinValueInput, checkinUnitInput);
+
+    checkinValueInput.addEventListener("input", () => {
+      validateTimeInput(checkinValueInput, checkinUnitInput);
+    });
+    checkinUnitInput.addEventListener("change", () => {
+      validateTimeInput(checkinValueInput, checkinUnitInput);
+    });
+  }
+
+  if (inactivityValueInput && inactivityUnitInput) {
+    // Initialize max attribute on page load
+    validateTimeInput(inactivityValueInput, inactivityUnitInput);
+
+    inactivityValueInput.addEventListener("input", () => {
+      validateTimeInput(inactivityValueInput, inactivityUnitInput);
+    });
+    inactivityUnitInput.addEventListener("change", () => {
+      validateTimeInput(inactivityValueInput, inactivityUnitInput);
+    });
+  }
+
   // Add event listeners to save form selections when they change
   document.addEventListener("change", async (event) => {
     if (
