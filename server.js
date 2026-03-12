@@ -6,8 +6,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const cookieParser = require("cookie-parser");
-const authRoutes = require("./routes/auth");
-const deadmanRoutes = require("./routes/deadman-minimal");
+const deadmanRoutes = require("./routes/deadman");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -71,7 +70,6 @@ app.get("/health", (req, res) => {
 });
 
 // Routes
-app.use("/auth", authRoutes);
 app.use("/deadman", deadmanRoutes);
 
 // Start servers

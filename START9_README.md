@@ -1,6 +1,6 @@
 # Deadman Switch for Start9
 
-This directory contains all the necessary files to package the Deadman Switch application for Start9 servers.
+This directory contains all the necessary files to package the Deploy: Deadman Switch application for Start9 servers.
 
 ## Quick Start
 
