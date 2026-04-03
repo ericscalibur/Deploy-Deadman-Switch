@@ -1297,58 +1297,48 @@ router.post("/debug-activation", authenticateToken, (req, res) => {
   }
 });
 
-// Debug endpoint to clear all active switches and start fresh
+// Debug endpoint to clear requesting user's active switch and start fresh
 router.post("/debug-clear-all", authenticateToken, (req, res) => {
   try {
     const userEmail = req.user.email;
     console.log(`🧹 DEBUG-CLEAR-ALL: Request from ${userEmail}`);
 
+    // Scope to requesting user only
     let clearedCount = 0;
-
-    // Clear active switches
-    for (const [email, switchData] of activeDeadmanSwitches.entries()) {
-      console.log(`🧹 Clearing active switch for ${email}`);
-
-      // Clear timers
-      if (switchData.checkinTimer) {
-        clearInterval(switchData.checkinTimer);
-        console.log(`   ✅ Cleared check-in timer`);
-      }
-      if (switchData.deadmanTimer) {
-        clearTimeout(switchData.deadmanTimer);
-        console.log(`   ✅ Cleared deadman timer`);
-      }
-
-      activeDeadmanSwitches.delete(email);
-      clearedCount++;
+    if (activeDeadmanSwitches.has(userEmail)) {
+      const switchData = activeDeadmanSwitches.get(userEmail);
+      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
+      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
+      activeDeadmanSwitches.delete(userEmail);
+      clearedCount = 1;
+      console.log(`🧹 Cleared active switch for ${userEmail}`);
     }
 
-    // Clear check-in tokens
-    const tokenCount = checkinTokens.size;
-    checkinTokens.clear();
+    // Clear tokens for this user only
+    let tokenCount = 0;
+    for (const [token, email] of checkinTokens.entries()) {
+      if (email === userEmail) {
+        checkinTokens.delete(token);
+        tokenCount++;
+      }
+    }
 
-    // Clear user emails
-    const emailCount = userEmails.size;
-    userEmails.clear();
+    // Clear this user's emails and history
+    const hadEmails = userEmails.has(userEmail);
+    const hadHistory = deadmanActivationHistory.has(userEmail);
+    userEmails.delete(userEmail);
+    deadmanActivationHistory.delete(userEmail);
 
-    // Clear activation history
-    const historyCount = deadmanActivationHistory.size;
-    deadmanActivationHistory.clear();
-
-    console.log(`🧹 DEBUG-CLEAR-ALL: Cleanup complete`);
-    console.log(`   - Cleared ${clearedCount} active switches`);
-    console.log(`   - Cleared ${tokenCount} check-in tokens`);
-    console.log(`   - Cleared ${emailCount} user email entries`);
-    console.log(`   - Cleared ${historyCount} activation history entries`);
+    console.log(`🧹 DEBUG-CLEAR-ALL: Cleanup complete for ${userEmail}`);
 
     res.json({
       success: true,
-      message: "All active switches and data cleared",
+      message: "Your active switch and data cleared",
       cleared: {
         activeSwitches: clearedCount,
         checkinTokens: tokenCount,
-        userEmails: emailCount,
-        activationHistory: historyCount,
+        userEmails: hadEmails ? 1 : 0,
+        activationHistory: hadHistory ? 1 : 0,
       },
     });
   } catch (error) {
@@ -1357,33 +1347,31 @@ router.post("/debug-clear-all", authenticateToken, (req, res) => {
   }
 });
 
-// Debug endpoint to show current active switches
-router.get("/debug-active-switches", (req, res) => {
+// Debug endpoint to show current active switch (own user only)
+router.get("/debug-active-switches", authenticateToken, (req, res) => {
   try {
-    const switches = [];
+    const userEmail = req.user.email;
     const now = Date.now();
+    const switchData = activeDeadmanSwitches.get(userEmail);
 
-    for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
-      const timeToNextCheckin = switchData.nextCheckin - now;
-      const timeToDeadman = switchData.deadmanActivation - now;
-
-      switches.push({
-        userEmail,
-        settings: switchData.settings,
-        timeToNextCheckin: `${Math.round(timeToNextCheckin / 1000 / 60)} minutes`,
-        timeToDeadman: `${Math.round(timeToDeadman / 1000 / 60)} minutes`,
-        hasCheckinTimer: !!switchData.checkinTimer,
-        hasDeadmanTimer: !!switchData.deadmanTimer,
-        lastActivity: switchData.lastActivity,
-      });
+    if (!switchData) {
+      return res.json({ success: true, activeSwitches: [], totalActive: 0 });
     }
 
     res.json({
       success: true,
-      activeSwitches: switches,
-      totalActive: switches.length,
-      checkinTokens: checkinTokens.size,
-      userEmails: userEmails.size,
+      activeSwitches: [
+        {
+          userEmail,
+          settings: switchData.settings,
+          timeToNextCheckin: `${Math.round((switchData.nextCheckin - now) / 1000 / 60)} minutes`,
+          timeToDeadman: `${Math.round((switchData.deadmanActivation - now) / 1000 / 60)} minutes`,
+          hasCheckinTimer: !!switchData.checkinTimer,
+          hasDeadmanTimer: !!switchData.deadmanTimer,
+          lastActivity: switchData.lastActivity,
+        },
+      ],
+      totalActive: 1,
     });
   } catch (error) {
     console.error("❌ DEBUG-ACTIVE-SWITCHES ERROR:", error);
@@ -2309,7 +2297,7 @@ router.get("/debug/activation-history", authenticateToken, (req, res) => {
   });
 });
 
-// Nuclear reset endpoint - wipes everything completely
+// Nuclear reset endpoint - wipes requesting user's data completely
 router.post("/nuclear-reset", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -2317,12 +2305,19 @@ router.post("/nuclear-reset", authenticateToken, async (req, res) => {
 
     console.log(`💥 NUCLEAR-RESET: Starting complete wipe for ${userEmail}`);
 
-    // 1. Clear ALL in-memory data for ALL users (nuclear approach)
-    console.log(`💥 NUCLEAR-RESET: Clearing all memory maps`);
-    activeDeadmanSwitches.clear();
-    userEmails.clear();
-    checkinTokens.clear();
-    deadmanActivationHistory.clear();
+    // 1. Clear in-memory data for this user only
+    if (activeDeadmanSwitches.has(userEmail)) {
+      const switchData = activeDeadmanSwitches.get(userEmail);
+      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
+      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
+      activeDeadmanSwitches.delete(userEmail);
+    }
+    userEmails.delete(userEmail);
+    deadmanActivationHistory.delete(userEmail);
+    for (const [token, email] of checkinTokens.entries()) {
+      if (email === userEmail) checkinTokens.delete(token);
+    }
+    console.log(`💥 NUCLEAR-RESET: Cleared memory for ${userEmail}`);
 
     // 2. Clear database session
     try {
@@ -2332,23 +2327,11 @@ router.post("/nuclear-reset", authenticateToken, async (req, res) => {
       console.log(`💥 NUCLEAR-RESET: No database session to deactivate`);
     }
 
-    // 3. Force garbage collection if available
-    if (global.gc) {
-      global.gc();
-      console.log(`💥 NUCLEAR-RESET: Forced garbage collection`);
-    }
-
-    console.log(`💥 NUCLEAR-RESET: Complete nuclear reset completed`);
-    console.log(
-      `💥 NUCLEAR-RESET: All systems cleared - ready for fresh start`,
-    );
+    console.log(`💥 NUCLEAR-RESET: Complete reset for ${userEmail}`);
 
     res.json({
       success: true,
-      message:
-        "NUCLEAR RESET COMPLETE. All deadman switch data wiped. Server memory cleared. You can now start completely fresh.",
-      warning:
-        "This cleared ALL deadman switches for ALL users. Use with caution.",
+      message: "NUCLEAR RESET COMPLETE. Your deadman switch data has been wiped. You can now start completely fresh.",
     });
   } catch (error) {
     console.error("❌ NUCLEAR-RESET ERROR:", error);

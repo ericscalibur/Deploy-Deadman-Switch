@@ -58,3 +58,14 @@ data/*.json
 
 # Backup files
 *.backup
+
+# start-sdk build tools (not part of this project)
+start-os/
+
+# Release artifacts (signed releases live outside the repo)
+releases/
+
+# Build artifacts
+*.s9pk
+*.tar.gz
+docker-images/

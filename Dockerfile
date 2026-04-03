@@ -4,8 +4,11 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
-# Install Python for generate_secret.py (needed for initial setup)
-RUN apk add --no-cache python3 py3-pip
+# Install dependencies
+# python3: generate_secret.py (initial setup)
+# curl: health check endpoint
+# yq: YAML parsing in start9/configurator.sh
+RUN apk add --no-cache python3 py3-pip curl yq bash
 
 # Copy package files
 COPY package*.json ./
@@ -21,6 +24,9 @@ RUN mkdir -p data database public routes utils models
 
 # Set permissions for data directory
 RUN chmod 755 data database
+
+# Make Start9 scripts available in PATH
+RUN cp start9/*.sh /usr/local/bin/ && chmod +x /usr/local/bin/*.sh
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs

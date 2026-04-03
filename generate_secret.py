@@ -13,9 +13,21 @@ def create_env_file(secret_key):
     env_content = f"""# JWT Secret Key (keep this secret!)
 SECRET_KEY={secret_key}
 
-# Gmail SMTP Configuration
+# Primary SMTP — Gmail (recommended)
 EMAIL_USER=your-email@gmail.com
 EMAIL_PASS=your-app-password-here
+
+# Primary SMTP — Custom (alternative to Gmail, leave blank if using Gmail above)
+# SMTP_HOST=smtp.yourprovider.com
+# SMTP_PORT=587
+# SMTP_USER=your-smtp-user
+# SMTP_PASS=your-smtp-password
+
+# Backup SMTP — used automatically if primary fails (optional but recommended)
+# SMTP_BACKUP_HOST=smtp.backupprovider.com
+# SMTP_BACKUP_PORT=587
+# SMTP_BACKUP_USER=your-backup-user
+# SMTP_BACKUP_PASS=your-backup-password
 
 # Application URL (used for check-in links)
 APP_URL=http://localhost:3000
@@ -34,6 +46,15 @@ PORT=3000
     print("✅ .env file created successfully!")
 
 if __name__ == "__main__":
+    import sys
+
+    # --auto flag: non-interactive mode for Docker/Start9 entrypoint
+    if "--auto" in sys.argv:
+        secret_key = generate_secret_key()
+        create_env_file(secret_key)
+        print(f"✅ Auto-generated .env with SECRET_KEY")
+        sys.exit(0)
+
     print("🔐 Deploy: Deadman Switch - Secret Key Generator")
     print("=" * 50)
 
