@@ -4,66 +4,129 @@ const nodemailer = require("nodemailer");
 class EmailService {
   constructor() {
     this.transporter = null;
+    this.backupTransporter = null;
     this.initialized = false;
     this.init();
+  }
+
+  _buildPrimaryTransport() {
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+      console.log("Using Gmail SMTP configuration (primary)");
+      return nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+    } else if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      console.log("Using custom SMTP configuration (primary)");
+      return nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT) || 587,
+        secure: process.env.SMTP_PORT === "465",
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+    }
+    return null;
+  }
+
+  _buildBackupTransport() {
+    if (process.env.SMTP_BACKUP_HOST && process.env.SMTP_BACKUP_USER && process.env.SMTP_BACKUP_PASS) {
+      console.log("Using backup SMTP configuration");
+      return nodemailer.createTransport({
+        host: process.env.SMTP_BACKUP_HOST,
+        port: parseInt(process.env.SMTP_BACKUP_PORT) || 587,
+        secure: process.env.SMTP_BACKUP_PORT === "465",
+        auth: {
+          user: process.env.SMTP_BACKUP_USER,
+          pass: process.env.SMTP_BACKUP_PASS,
+        },
+      });
+    }
+    return null;
   }
 
   async init() {
     try {
       console.log("Initializing email service...");
 
-      // For testing, use Ethereal Email (fake SMTP service)
-      // In production, you'd use real SMTP credentials
-      if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-        console.log("Using Gmail SMTP configuration");
-        // Gmail SMTP configuration
-        this.transporter = nodemailer.createTransport({
-          service: "gmail",
-          auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS,
-          },
-        });
-      } else if (
-        process.env.SMTP_HOST &&
-        process.env.SMTP_USER &&
-        process.env.SMTP_PASS
-      ) {
-        console.log("Using production SMTP configuration");
-        // Production SMTP configuration
-        this.transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST,
-          port: process.env.SMTP_PORT || 587,
-          secure: false, // true for 465, false for other ports
-          auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
-          },
-        });
-      } else {
-        console.log("Using Ethereal test email configuration");
-        // Test configuration using Ethereal Email
+      this.transporter = this._buildPrimaryTransport();
+
+      if (!this.transporter) {
+        console.log("No primary SMTP configured — using Ethereal test account");
         const testAccount = await nodemailer.createTestAccount();
         console.log("Test account created:", testAccount.user);
-
         this.transporter = nodemailer.createTransport({
           host: "smtp.ethereal.email",
           port: 587,
           secure: false,
-          auth: {
-            user: testAccount.user,
-            pass: testAccount.pass,
-          },
+          auth: { user: testAccount.user, pass: testAccount.pass },
         });
       }
 
-      // Verify the connection
+      // Verify primary
       await this.transporter.verify();
       this.initialized = true;
-      console.log("✅ Email service initialized successfully");
+      console.log("✅ Primary email transporter verified");
+
+      // Init backup transporter if configured (non-blocking)
+      const backup = this._buildBackupTransport();
+      if (backup) {
+        backup.verify()
+          .then(() => {
+            this.backupTransporter = backup;
+            console.log("✅ Backup email transporter verified");
+          })
+          .catch((err) => {
+            console.warn("⚠️ Backup SMTP failed verification, ignoring:", err.message);
+          });
+      }
     } catch (error) {
-      console.error("❌ Failed to initialize email service:", error);
-      this.initialized = false;
+      console.error("❌ Failed to initialize primary email service:", error);
+
+      // Try backup as primary if primary fails init
+      const backup = this._buildBackupTransport();
+      if (backup) {
+        try {
+          await backup.verify();
+          this.transporter = backup;
+          this.initialized = true;
+          console.log("✅ Falling back to backup SMTP as primary");
+        } catch (backupError) {
+          console.error("❌ Backup SMTP also failed:", backupError.message);
+          this.initialized = false;
+        }
+      } else {
+        this.initialized = false;
+      }
+    }
+  }
+
+  // Send via primary, retry once with backup on failure
+  async _sendWithFallback(mailOptions) {
+    try {
+      const info = await this.transporter.sendMail(mailOptions);
+      return { success: true, info, usedBackup: false };
+    } catch (primaryError) {
+      console.error("❌ Primary SMTP send failed:", primaryError.message);
+
+      if (this.backupTransporter) {
+        console.log("🔄 Retrying with backup SMTP...");
+        try {
+          const info = await this.backupTransporter.sendMail(mailOptions);
+          console.log("✅ Backup SMTP send succeeded");
+          return { success: true, info, usedBackup: true };
+        } catch (backupError) {
+          console.error("❌ Backup SMTP send also failed:", backupError.message);
+          throw backupError;
+        }
+      }
+
+      throw primaryError;
     }
   }
 
@@ -109,11 +172,8 @@ This is an automated message from Deploy Deadman Switch.
         `,
       };
 
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(
-        `✅ Check-in email sent successfully to ${userEmail}`,
-        info.messageId,
-      );
+      const { info } = await this._sendWithFallback(mailOptions);
+      console.log(`✅ Check-in email sent successfully to ${userEmail}`, info.messageId);
       return true;
     } catch (error) {
       console.error(`❌ Failed to send check-in email to ${userEmail}:`, error);
@@ -177,7 +237,7 @@ Original sender: ${userEmail}
         };
 
         try {
-          const info = await this.transporter.sendMail(mailOptions);
+          const { info } = await this._sendWithFallback(mailOptions);
           console.log(
             `✅ Deadman email ${index + 1} sent successfully to ${recipientEmail}`,
             info.messageId,

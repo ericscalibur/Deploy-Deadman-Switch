@@ -62,6 +62,34 @@ email:
       nullable: true
       masked: true
       placeholder: "your-smtp-password"
+  backup_smtp:
+    enabled: false
+    host:
+      type: string
+      name: "Backup SMTP Host"
+      description: "Fallback SMTP server — used automatically if primary fails"
+      nullable: true
+      placeholder: "smtp.backup-provider.com"
+    port:
+      type: number
+      name: "Backup SMTP Port"
+      description: "Backup SMTP server port"
+      nullable: true
+      default: 587
+      range: "[1,65535]"
+    user:
+      type: string
+      name: "Backup SMTP Username"
+      description: "Backup SMTP authentication username"
+      nullable: true
+      placeholder: "your-backup-username"
+    password:
+      type: string
+      name: "Backup SMTP Password"
+      description: "Backup SMTP authentication password"
+      nullable: true
+      masked: true
+      placeholder: "your-backup-password"
 advanced:
   port:
     type: number
@@ -138,6 +166,21 @@ SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_USER=${SMTP_USER}
 SMTP_PASS=${SMTP_PASS}
+EOF
+    fi
+
+    # Append backup SMTP if configured (works regardless of primary provider)
+    BACKUP_HOST=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.host // ""' -)
+    if [ -n "$BACKUP_HOST" ] && [ "$BACKUP_HOST" != "null" ]; then
+        BACKUP_PORT=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.port // 587' -)
+        BACKUP_USER=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.user // ""' -)
+        BACKUP_PASS=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.password // ""' -)
+
+        cat >> "$ENV_FILE" << EOF
+SMTP_BACKUP_HOST=${BACKUP_HOST}
+SMTP_BACKUP_PORT=${BACKUP_PORT}
+SMTP_BACKUP_USER=${BACKUP_USER}
+SMTP_BACKUP_PASS=${BACKUP_PASS}
 EOF
     fi
 
