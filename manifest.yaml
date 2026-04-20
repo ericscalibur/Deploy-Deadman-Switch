@@ -1,11 +1,10 @@
 id: deadman-switch
-title: Deadman Switch
-version: 1.0.0
+title: "Deploy: Deadman Switch"
+version: 1.0.11
 release-notes: |
-  - Initial release of Deadman Switch for Start9
-  - Secure web-based deadman switch with email notifications
-  - JWT authentication and encrypted data storage
-  - Configurable check-in intervals and inactivity periods
+  - Fix: config fields (email credentials, Service URL) now persist across saves
+  - Config containers use inject:true to call the running service's internal API
+  - Config stored in SQLite settings table; loaded from DB at startup before email init
 license: MIT
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
@@ -54,12 +53,16 @@ config:
     entrypoint: configurator.sh
     args: ["get"]
     io-format: yaml
+    mounts:
+      main: /app/data
   set:
     type: docker
     image: main
     entrypoint: configurator.sh
     args: ["set"]
     io-format: yaml
+    mounts:
+      main: /app/data
 
 properties:
   type: docker

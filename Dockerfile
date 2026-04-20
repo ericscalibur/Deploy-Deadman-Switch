@@ -19,20 +19,19 @@ RUN npm install --production
 # Copy application files
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p data database public routes utils models
-
-# Set permissions for data directory
-RUN chmod 755 data database
-
 # Make Start9 scripts available in PATH
 RUN cp start9/*.sh /usr/local/bin/ && chmod +x /usr/local/bin/*.sh
+
+# Install su-exec for safe privilege dropping in entrypoint
+RUN apk add --no-cache su-exec
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S deadman -u 1001
-RUN chown -R deadman:nodejs /app
-USER deadman
+RUN mkdir -p /app/data && chown -R deadman:nodejs /app
+
+# Entrypoint runs as root to fix volume permissions, then drops to deadman
+# (do not set USER here)
 
 # Expose port
 EXPOSE 3000

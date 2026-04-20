@@ -6,8 +6,8 @@ set -ea
 
 # Get service status and properties
 main() {
-    local config_file="/app/start9/config.yaml"
-    local env_file="/app/.env"
+    local config_file="/app/data/config.yaml"
+    local env_file="/app/data/.env"
     local port="${PORT:-3000}"
 
     # Check if service is configured
@@ -50,11 +50,21 @@ main() {
         user_count=$(sqlite3 /app/database/deadman_switch.db "SELECT COUNT(*) FROM users;" 2>/dev/null || echo "0")
     fi
 
+    # Debug: check if config file was written by configurator
+    local config_exists="false"
+    local config_contents="none"
+    if [ -f "$config_file" ]; then
+        config_exists="true"
+        config_contents=$(cat "$config_file" | tr '\n' '|' | head -c 200)
+    fi
+
     # Output properties as JSON
     cat << EOF
 {
     "version": "$version",
     "configured": $configured,
+    "config_file_exists": $config_exists,
+    "config_file_contents": "$config_contents",
     "running": $running,
     "email_provider": "$email_provider",
     "port": $port,

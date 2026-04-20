@@ -8,7 +8,7 @@ def generate_secret_key(length=32):
     secret_key = base64.b64encode(random_bytes).decode('utf-8')
     return secret_key
 
-def create_env_file(secret_key):
+def create_env_file(secret_key, out_path=".env"):
     """Creates a .env file with the generated secret key and template."""
     env_content = f"""# JWT Secret Key (keep this secret!)
 SECRET_KEY={secret_key}
@@ -36,11 +36,11 @@ APP_URL=http://localhost:3000
 PORT=3000
 """
 
-    if os.path.exists('.env'):
-        print("⚠️  .env file already exists. Backup created as .env.backup")
-        os.rename('.env', '.env.backup')
+    if os.path.exists(out_path):
+        print(f"⚠️  {out_path} already exists. Backup created as {out_path}.backup")
+        os.rename(out_path, out_path + '.backup')
 
-    with open('.env', 'w') as f:
+    with open(out_path, 'w') as f:
         f.write(env_content)
 
     print("✅ .env file created successfully!")
@@ -50,9 +50,12 @@ if __name__ == "__main__":
 
     # --auto flag: non-interactive mode for Docker/Start9 entrypoint
     if "--auto" in sys.argv:
+        out_path = ".env"
+        if "--out" in sys.argv:
+            out_path = sys.argv[sys.argv.index("--out") + 1]
         secret_key = generate_secret_key()
-        create_env_file(secret_key)
-        print(f"✅ Auto-generated .env with SECRET_KEY")
+        create_env_file(secret_key, out_path)
+        print(f"✅ Auto-generated {out_path} with SECRET_KEY")
         sys.exit(0)
 
     print("🔐 Deploy: Deadman Switch - Secret Key Generator")

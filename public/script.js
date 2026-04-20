@@ -379,9 +379,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const inactivityUnit = document.getElementById("inactivity-unit")?.value;
 
     const formData = {
-      checkinMethod: document.querySelector(
-        'input[name="checkin-method"]:checked',
-      )?.value,
+      checkinMethod: "email",
       checkinInterval:
         checkinValue && checkinUnit ? `${checkinValue}-${checkinUnit}` : null,
       inactivityPeriod:

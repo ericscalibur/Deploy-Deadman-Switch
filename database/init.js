@@ -2,8 +2,8 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 
-// Database file path
-const DB_PATH = path.join(__dirname, 'deadman_switch.db');
+// Database file path — use persistent volume in production
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'deadman_switch.db');
 
 // Initialize database with proper schema
 function initializeDatabase() {
@@ -77,6 +77,14 @@ function initializeDatabase() {
             );
         `;
 
+        // Key-value store for service-level config (set via Start9 Config UI)
+        const createSettingsTable = `
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT
+            );
+        `;
+
         // Create audit log table for security
         const createAuditTable = `
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -137,6 +145,15 @@ function initializeDatabase() {
                     return;
                 }
                 console.log('Audit log table created or already exists');
+            });
+
+            db.run(createSettingsTable, (err) => {
+                if (err) {
+                    console.error('Error creating settings table:', err.message);
+                    reject(err);
+                    return;
+                }
+                console.log('Settings table created or already exists');
             });
 
             // Create indexes

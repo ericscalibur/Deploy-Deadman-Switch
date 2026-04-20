@@ -2,31 +2,35 @@
 
 set -ea
 
-_term() {
-    echo "Caught SIGTERM signal!"
-    kill -TERM "$child" 2>/dev/null
-}
-
-trap _term SIGTERM
-
-# Create data directories if they don't exist
+# Running as root — fix volume permissions then drop to app user
 mkdir -p /app/data
-mkdir -p /app/database
+chown -R deadman:nodejs /app/data
 
-# Generate .env file if it doesn't exist
-if [ ! -f /app/.env ]; then
+# Generate .env in the persistent data volume if it doesn't exist
+if [ ! -f /app/data/.env ]; then
     echo "Generating initial .env configuration..."
-    python3 /app/generate_secret.py --auto
+    python3 /app/generate_secret.py --auto --out /app/data/.env
 fi
 
-# Set default environment variables if not provided
-export NODE_ENV="${NODE_ENV:-production}"
-export PORT="${PORT:-3000}"
-export APP_URL="${APP_URL:-http://localhost:3000}"
+# Load .env into the environment
+if [ -f /app/data/.env ]; then
+    set -a
+    source /app/data/.env
+    set +a
+fi
 
-# Initialize database
+# Start9 handles all SSL/Tor proxying — container serves plain HTTP on 3000 only
+export NODE_ENV="production"
+export PORT="3000"
+export DB_PATH="/app/data/deadman_switch.db"
+# APP_URL comes from .env (set via config); fall back to localhost if not configured
+export APP_URL="${APP_URL:-http://localhost:3000}"
+unset SSL_KEY_PATH
+unset SSL_CERT_PATH
+
+# Initialize database as app user
 echo "Initializing database..."
-cd /app && node -e "
+su-exec deadman node -e "
 const initDb = require('./database/init.js');
 initDb.initializeDatabase().then(() => {
     console.log('Database initialized successfully');
@@ -34,13 +38,8 @@ initDb.initializeDatabase().then(() => {
 }).catch(err => {
     console.error('Database initialization failed:', err);
     process.exit(1);
-});
-"
+});" || { echo 'Database init failed'; exit 1; }
 
-# Start the application
+# Drop to app user and start server
 echo "Starting Deadman Switch server..."
-cd /app
-exec node server.js &
-
-child=$!
-wait "$child"
+exec su-exec deadman node /app/server.js

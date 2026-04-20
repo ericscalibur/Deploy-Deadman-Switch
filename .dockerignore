@@ -1,0 +1,27 @@
+# Exclude the package itself (prevents circular bloat)
+*.s9pk
+
+# Exclude Docker build artifacts
+docker-images/
+Dockerfile
+.dockerignore
+
+# Exclude node_modules (will be installed fresh inside container)
+node_modules/
+
+# Exclude build output
+build/
+
+# Exclude dev/test files
+tests/
+*.log
+*.md
+releases/
+
+# Exclude secrets
+.env
+.env.*
+
+# Exclude git
+.git/
+.gitignore

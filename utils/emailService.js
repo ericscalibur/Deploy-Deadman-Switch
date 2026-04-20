@@ -106,6 +106,14 @@ class EmailService {
     }
   }
 
+  async reinitialize() {
+    console.log("Reinitializing email service with updated config...");
+    this.initialized = false;
+    this.transporter = null;
+    this.backupTransporter = null;
+    await this.init();
+  }
+
   // Send via primary, retry once with backup on failure
   async _sendWithFallback(mailOptions) {
     try {

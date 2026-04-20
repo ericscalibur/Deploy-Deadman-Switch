@@ -1,6 +1,5 @@
 const sqlite3 = require("sqlite3").verbose();
 const crypto = require("./crypto");
-const { DB_PATH } = require("./init");
 
 class UserService {
   constructor() {
@@ -9,6 +8,8 @@ class UserService {
 
   // Initialize database connection
   async connect() {
+    // Read DB_PATH at connect time so env vars are already set
+    const { DB_PATH } = require("./init");
     return new Promise((resolve, reject) => {
       this.db = new sqlite3.Database(DB_PATH, (err) => {
         if (err) {
@@ -47,7 +48,8 @@ class UserService {
         const passwordHash = crypto.hashPassword(password, salt);
 
         // Insert user
-        this.db.run(
+        const db = this.db;
+        db.run(
           "INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
           [email, passwordHash, salt],
           function (err) {
@@ -86,7 +88,7 @@ class UserService {
                   // Use the same IV for all data for this user
                   const iv = encryptedEmails.iv;
 
-                  this.db.run(
+                  db.run(
                     "INSERT INTO encrypted_user_data (user_id, encrypted_emails, encrypted_settings, encrypted_checkin_tokens, iv) VALUES (?, ?, ?, ?, ?)",
                     [
                       userId,
