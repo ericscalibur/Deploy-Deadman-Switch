@@ -15,8 +15,22 @@ const {
 // Initialize database service
 const userService = new UserService();
 
-// Initialize database connection
-userService.connect().catch(console.error);
+// Initialize database connection — block until ready, crash if it fails
+let dbReady = false;
+userService.connect().then(() => {
+    dbReady = true;
+}).catch(err => {
+    console.error('Fatal: database connection failed:', err);
+    process.exit(1);
+});
+
+// Reject requests until DB is connected
+router.use((req, res, next) => {
+    if (!dbReady) {
+        return res.status(503).json({ error: 'Service starting, please retry in a moment' });
+    }
+    next();
+});
 
 // In-memory cache for active sessions (will be replaced by database queries)
 const activeDeadmanSwitches = new Map();

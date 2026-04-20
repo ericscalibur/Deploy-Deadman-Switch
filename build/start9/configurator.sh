@@ -6,130 +6,109 @@ ACTION="${1:-get}"
 CONFIG_FILE="/app/start9/config.yaml"
 ENV_FILE="/app/.env"
 
-# Default configuration
-default_config() {
-cat << EOF
-email:
-  provider:
+# Emit the config spec (field definitions for the Start9 UI)
+config_spec() {
+cat << 'EOF'
+spec:
+  email_provider:
     type: enum
-    name: "Email Provider"
-    description: "Choose your email service provider"
+    name: Email Provider
+    description: Choose your email service provider
     default: gmail
     values:
       - gmail
       - smtp
-  gmail:
-    enabled: true
-    user:
-      type: string
-      name: "Gmail Address"
-      description: "Your Gmail email address"
-      nullable: false
-      masked: false
-      placeholder: "your-email@gmail.com"
-    password:
-      type: string
-      name: "Gmail App Password"
-      description: "Gmail app password (not your regular password)"
-      nullable: false
-      masked: true
-      placeholder: "16-character app password"
-  smtp:
-    enabled: false
-    host:
-      type: string
-      name: "SMTP Host"
-      description: "SMTP server hostname"
-      nullable: true
-      placeholder: "smtp.your-provider.com"
-    port:
-      type: number
-      name: "SMTP Port"
-      description: "SMTP server port (usually 587 for TLS)"
-      nullable: true
-      default: 587
-      range: "[1,65535]"
-    user:
-      type: string
-      name: "SMTP Username"
-      description: "SMTP authentication username"
-      nullable: true
-      placeholder: "your-smtp-username"
-    password:
-      type: string
-      name: "SMTP Password"
-      description: "SMTP authentication password"
-      nullable: true
-      masked: true
-      placeholder: "your-smtp-password"
-  backup_smtp:
-    enabled: false
-    host:
-      type: string
-      name: "Backup SMTP Host"
-      description: "Fallback SMTP server — used automatically if primary fails"
-      nullable: true
-      placeholder: "smtp.backup-provider.com"
-    port:
-      type: number
-      name: "Backup SMTP Port"
-      description: "Backup SMTP server port"
-      nullable: true
-      default: 587
-      range: "[1,65535]"
-    user:
-      type: string
-      name: "Backup SMTP Username"
-      description: "Backup SMTP authentication username"
-      nullable: true
-      placeholder: "your-backup-username"
-    password:
-      type: string
-      name: "Backup SMTP Password"
-      description: "Backup SMTP authentication password"
-      nullable: true
-      masked: true
-      placeholder: "your-backup-password"
-advanced:
-  port:
+  gmail_user:
+    type: string
+    name: Gmail Address
+    description: Your Gmail email address
+    nullable: true
+    masked: false
+    placeholder: "your-email@gmail.com"
+    default: ~
+  gmail_password:
+    type: string
+    name: Gmail App Password
+    description: Gmail app password (not your regular password). Enable 2FA and generate one at myaccount.google.com/apppasswords.
+    nullable: true
+    masked: true
+    placeholder: "16-character app password"
+    default: ~
+  smtp_host:
+    type: string
+    name: SMTP Host
+    description: SMTP server hostname (required if using smtp provider)
+    nullable: true
+    masked: false
+    placeholder: "smtp.your-provider.com"
+    default: ~
+  smtp_port:
     type: number
-    name: "Server Port"
-    description: "Internal server port (default: 3000)"
-    nullable: false
-    default: 3000
-    range: "[1024,65535]"
-  node_env:
-    type: enum
-    name: "Environment"
-    description: "Node.js environment setting"
-    default: production
-    values:
-      - production
-      - development
+    name: SMTP Port
+    description: SMTP server port (usually 587 for TLS)
+    nullable: true
+    range: "[1,65535]"
+    default: 587
+  smtp_user:
+    type: string
+    name: SMTP Username
+    description: SMTP authentication username
+    nullable: true
+    masked: false
+    placeholder: "your-smtp-username"
+    default: ~
+  smtp_password:
+    type: string
+    name: SMTP Password
+    description: SMTP authentication password
+    nullable: true
+    masked: true
+    placeholder: "your-smtp-password"
+    default: ~
+  app_url:
+    type: string
+    name: Service URL
+    description: Your Tor or LAN address for this service (used in check-in email links). Find it in Start9 under Services → Deploy → Interfaces.
+    nullable: true
+    masked: false
+    placeholder: "http://yourtoraddress.onion"
+    default: ~
 EOF
 }
 
-# Get current configuration
+# Read saved values (or emit defaults)
 get_config() {
     if [ -f "$CONFIG_FILE" ]; then
-        cat "$CONFIG_FILE"
+        # Return spec + current saved values
+        config_spec
+        echo "value:"
+        sed 's/^/  /' "$CONFIG_FILE"
     else
-        default_config
+        # Return spec + default values
+        config_spec
+        cat << 'EOF'
+value:
+  email_provider: gmail
+  gmail_user: ~
+  gmail_password: ~
+  smtp_host: ~
+  smtp_port: 587
+  smtp_user: ~
+  smtp_password: ~
+  app_url: ~
+EOF
     fi
 }
 
-# Set configuration
+# Set configuration — Start9 passes the flat `value` object via stdin
 set_config() {
-    # Read configuration from stdin
     CONFIG_INPUT=$(cat)
 
-    # Save to config file
+    # Save values for next get
+    mkdir -p /app/start9
     echo "$CONFIG_INPUT" > "$CONFIG_FILE"
 
-    # Extract values and update .env file
-    EMAIL_PROVIDER=$(echo "$CONFIG_INPUT" | yq e '.email.provider' -)
-    PORT=$(echo "$CONFIG_INPUT" | yq e '.advanced.port // 3000' -)
-    NODE_ENV=$(echo "$CONFIG_INPUT" | yq e '.advanced.node_env // "production"' -)
+    EMAIL_PROVIDER=$(echo "$CONFIG_INPUT" | yq e '.email_provider // "gmail"' -)
 
     # Generate SECRET_KEY if not exists
     if [ ! -f "$ENV_FILE" ] || ! grep -q "SECRET_KEY=" "$ENV_FILE"; then
@@ -138,30 +117,30 @@ set_config() {
         SECRET_KEY=$(grep "SECRET_KEY=" "$ENV_FILE" | cut -d'=' -f2)
     fi
 
-    # Create .env file
+    APP_URL=$(echo "$CONFIG_INPUT" | yq e '.app_url // ""' -)
+
     cat > "$ENV_FILE" << EOF
 SECRET_KEY=${SECRET_KEY}
-PORT=${PORT}
-NODE_ENV=${NODE_ENV}
-APP_URL=https://$(hostname).local
+PORT=3000
+NODE_ENV=production
+APP_URL=${APP_URL}
 EOF
 
-    # Add email configuration based on provider
     if [ "$EMAIL_PROVIDER" = "gmail" ]; then
-        EMAIL_USER=$(echo "$CONFIG_INPUT" | yq e '.email.gmail.user // ""' -)
-        EMAIL_PASS=$(echo "$CONFIG_INPUT" | yq e '.email.gmail.password // ""' -)
-
+        EMAIL_USER=$(echo "$CONFIG_INPUT" | yq e '.gmail_user // ""' -)
+        EMAIL_PASS=$(echo "$CONFIG_INPUT" | yq e '.gmail_password // ""' -)
         cat >> "$ENV_FILE" << EOF
+EMAIL_PROVIDER=gmail
 EMAIL_USER=${EMAIL_USER}
 EMAIL_PASS=${EMAIL_PASS}
 EOF
-    elif [ "$EMAIL_PROVIDER" = "smtp" ]; then
-        SMTP_HOST=$(echo "$CONFIG_INPUT" | yq e '.email.smtp.host // ""' -)
-        SMTP_PORT=$(echo "$CONFIG_INPUT" | yq e '.email.smtp.port // 587' -)
-        SMTP_USER=$(echo "$CONFIG_INPUT" | yq e '.email.smtp.user // ""' -)
-        SMTP_PASS=$(echo "$CONFIG_INPUT" | yq e '.email.smtp.password // ""' -)
-
+    else
+        SMTP_HOST=$(echo "$CONFIG_INPUT" | yq e '.smtp_host // ""' -)
+        SMTP_PORT=$(echo "$CONFIG_INPUT" | yq e '.smtp_port // 587' -)
+        SMTP_USER=$(echo "$CONFIG_INPUT" | yq e '.smtp_user // ""' -)
+        SMTP_PASS=$(echo "$CONFIG_INPUT" | yq e '.smtp_password // ""' -)
         cat >> "$ENV_FILE" << EOF
+EMAIL_PROVIDER=smtp
 SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_USER=${SMTP_USER}
@@ -169,22 +148,8 @@ SMTP_PASS=${SMTP_PASS}
 EOF
     fi
 
-    # Append backup SMTP if configured (works regardless of primary provider)
-    BACKUP_HOST=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.host // ""' -)
-    if [ -n "$BACKUP_HOST" ] && [ "$BACKUP_HOST" != "null" ]; then
-        BACKUP_PORT=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.port // 587' -)
-        BACKUP_USER=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.user // ""' -)
-        BACKUP_PASS=$(echo "$CONFIG_INPUT" | yq e '.email.backup_smtp.password // ""' -)
-
-        cat >> "$ENV_FILE" << EOF
-SMTP_BACKUP_HOST=${BACKUP_HOST}
-SMTP_BACKUP_PORT=${BACKUP_PORT}
-SMTP_BACKUP_USER=${BACKUP_USER}
-SMTP_BACKUP_PASS=${BACKUP_PASS}
-EOF
-    fi
-
-    echo "Configuration updated successfully"
+    # Required by Start9 — signal successful config save
+    echo "depends-on: {}"
 }
 
 case "$ACTION" in

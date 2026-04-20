@@ -1,11 +1,8 @@
 id: deadman-switch
-title: Deadman Switch
-version: 1.0.0
+title: "Deploy: Deadman Switch"
+version: 1.0.9
 release-notes: |
-  - Initial release of Deadman Switch for Start9
-  - Secure web-based deadman switch with email notifications
-  - JWT authentication and encrypted data storage
-  - Configurable check-in intervals and inactivity periods
+  - Add Service URL config field so check-in email links use your .onion address instead of localhost
 license: MIT
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch

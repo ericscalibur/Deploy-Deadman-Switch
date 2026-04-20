@@ -7,7 +7,7 @@ set -ea
 
 # Check if the server is responding on the expected port
 PORT="${PORT:-3000}"
-URL="http://localhost:${PORT}"
+URL="http://localhost:${PORT}/health"
 
 # Function to check HTTP response
 check_http() {
@@ -43,17 +43,9 @@ main() {
         message="Deadman Switch web interface is ready"
     fi
 
-    # Output JSON result for Start9
+    # Output JSON result for Start9 (must use "result" key)
     cat << EOF
-{
-    "status": "${status}",
-    "message": "${message}",
-    "details": {
-        "port": ${PORT},
-        "url": "${URL}",
-        "timestamp": "$(date -Iseconds)"
-    }
-}
+{"result": "${status}", "message": "${message}"}
 EOF
 }
 
