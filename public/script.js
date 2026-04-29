@@ -592,7 +592,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (savedFormData.checkinInterval) {
       const intervalMs = getIntervalMs(savedFormData.checkinInterval);
-      nextCheckinTime = new Date().getTime() + intervalMs;
+      nextCheckinTime = lastActivityTime.getTime() + intervalMs;
     }
   }
 

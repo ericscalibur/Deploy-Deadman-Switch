@@ -93,7 +93,7 @@ async function recoverActiveDeadmanSwitches() {
             emails: [], // Will be populated when user provides password
           },
           lastActivity: new Date(session.last_activity),
-          nextCheckin: now + checkinIntervalMs,
+          nextCheckin: lastActivity + checkinIntervalMs,
           deadmanActivation: deadmanExpiry,
           checkinTimer: null,
           deadmanTimer: null,
@@ -101,7 +101,11 @@ async function recoverActiveDeadmanSwitches() {
         };
 
         // Set up check-in timer
-        switchData.checkinTimer = setInterval(async () => {
+        // Fire the first checkin at the correct absolute time (lastActivity + interval),
+        // not from now — so a server restart doesn't reset the schedule.
+        const timeUntilNextCheckin = Math.max(0, (lastActivity + checkinIntervalMs) - now);
+
+        const sendRecoveredCheckin = async () => {
           try {
             console.log(
               `🔍 PERIODIC CHECK-IN: Timer fired for ${session.email} (recovered)`,
@@ -111,7 +115,6 @@ async function recoverActiveDeadmanSwitches() {
               console.log(
                 `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${session.email}, stopping timer`,
               );
-              clearInterval(switchData.checkinTimer);
               return;
             }
 
@@ -165,7 +168,14 @@ async function recoverActiveDeadmanSwitches() {
               error,
             );
           }
-        }, checkinIntervalMs);
+
+          // Schedule next checkin if still active
+          if (activeDeadmanSwitches.has(session.email)) {
+            switchData.checkinTimer = setTimeout(sendRecoveredCheckin, checkinIntervalMs);
+          }
+        };
+
+        switchData.checkinTimer = setTimeout(sendRecoveredCheckin, timeUntilNextCheckin);
 
         // Set up deadman timer for remaining time with large timeout support
         const MAX_TIMEOUT = 2147483647; // Max setTimeout value
