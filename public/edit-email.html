@@ -30,6 +30,19 @@
                 ></textarea
                 ><br /><br />
 
+                <label for="email-payload">Encrypted Payload (optional):</label>
+                <br />
+                <small>Paste the Legacy encrypted ciphertext here. A QR code will be generated and embedded in the email automatically — the recipient just scans it to decrypt.</small>
+                <br /><br />
+                <textarea
+                    id="email-payload"
+                    name="email-payload"
+                    rows="4"
+                    cols="50"
+                    placeholder="Paste encrypted Legacy ciphertext here..."
+                ></textarea
+                ><br /><br />
+
                 <button type="submit" id="save-email-button">Save</button>
             </form>
         </div>
@@ -40,6 +53,8 @@
                     document.getElementById("email-address");
                 const emailContentTextarea =
                     document.getElementById("email-content");
+                const emailPayloadTextarea =
+                    document.getElementById("email-payload");
                 const saveButton = document.getElementById("save-email-button");
 
                 // Get the email index from the URL parameters
@@ -58,6 +73,7 @@
                     if (email) {
                         emailAddressInput.value = email.address;
                         emailContentTextarea.value = email.content;
+                        emailPayloadTextarea.value = email.payload || "";
                     }
                 }
 
@@ -66,6 +82,7 @@
 
                     const emailAddress = emailAddressInput.value;
                     const emailContent = emailContentTextarea.value;
+                    const emailPayload = emailPayloadTextarea.value.trim();
 
                     // Send the email data to the server to save or update
                     // the email. Include the emailIndex if it's an update.
@@ -80,6 +97,7 @@
                             body: JSON.stringify({
                                 emailAddress,
                                 emailContent,
+                                emailPayload: emailPayload || null,
                                 emailIndex: emailIndex
                                     ? parseInt(emailIndex)
                                     : null,
@@ -93,18 +111,16 @@
                                 localStorage.getItem("emails") || "[]",
                             );
 
+                            const emailData = {
+                                address: emailAddress,
+                                content: emailContent,
+                                ...(emailPayload && { payload: emailPayload }),
+                            };
+
                             if (emailIndex !== null) {
-                                // Update existing email
-                                emails[emailIndex] = {
-                                    address: emailAddress,
-                                    content: emailContent,
-                                };
+                                emails[emailIndex] = emailData;
                             } else {
-                                // Add new email
-                                emails.push({
-                                    address: emailAddress,
-                                    content: emailContent,
-                                });
+                                emails.push(emailData);
                             }
 
                             localStorage.setItem(

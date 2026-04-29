@@ -518,7 +518,7 @@ router.post("/emails", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const userEmail = req.user.email;
-    const { emailAddress, emailContent, emailIndex } = req.body;
+    const { emailAddress, emailContent, emailPayload, emailIndex } = req.body;
 
     // Get password from request (needed for decryption)
     const password = req.body.password;
@@ -538,24 +538,19 @@ router.post("/emails", authenticateToken, async (req, res) => {
 
     let existingEmails = currentData.emails || [];
 
+    const emailData = {
+      address: emailAddress,
+      content: emailContent,
+      to: emailAddress,
+      subject: "Important Message from " + userEmail,
+      body: emailContent,
+      ...(emailPayload && { payload: emailPayload }),
+    };
+
     if (emailIndex !== null && emailIndex >= 0) {
-      // Update existing email
-      existingEmails[emailIndex] = {
-        address: emailAddress,
-        content: emailContent,
-        to: emailAddress,
-        subject: "Important Message from " + userEmail,
-        body: emailContent,
-      };
+      existingEmails[emailIndex] = emailData;
     } else {
-      // Add new email
-      existingEmails.push({
-        address: emailAddress,
-        content: emailContent,
-        to: emailAddress,
-        subject: "Important Message from " + userEmail,
-        body: emailContent,
-      });
+      existingEmails.push(emailData);
     }
 
     // Update encrypted database

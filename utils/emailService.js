@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const QRCode = require("qrcode");
 
 // Email service for sending check-in and deadman emails
 class EmailService {
@@ -213,6 +214,31 @@ This is an automated message from Deploy Deadman Switch.
           `📧 Sending deadman email ${index + 1} to ${recipientEmail}`,
         );
 
+        // Generate QR code if an encrypted payload is attached to this email
+        let qrHtml = "";
+        let qrText = "";
+        if (email.payload) {
+          try {
+            const qrDataUrl = await QRCode.toDataURL(email.payload, {
+              errorCorrectionLevel: "M",
+              margin: 2,
+              width: 400,
+            });
+            qrHtml = `
+              <div style="text-align: center; margin: 24px 0;">
+                <p><strong>Scan this QR code with Legacy to decrypt:</strong></p>
+                <img src="${qrDataUrl}" alt="Legacy Encrypted QR Code" style="width: 300px; height: 300px;" />
+                <p style="font-size: 11px; color: #888; margin-top: 8px;">
+                  Or copy the encrypted text below into Legacy manually.
+                </p>
+                <pre style="font-size: 10px; word-break: break-all; background: #f4f4f4; padding: 10px; border-radius: 4px;">${email.payload}</pre>
+              </div>`;
+            qrText = `\nEncrypted payload (paste into Legacy to decrypt):\n${email.payload}\n`;
+          } catch (qrErr) {
+            console.error(`⚠️ QR generation failed for email ${index + 1}:`, qrErr.message);
+          }
+        }
+
         const mailOptions = {
           from: `"${userEmail}" <noreply@deploy-deadman.com>`,
           to: recipientEmail,
@@ -224,6 +250,7 @@ This is an automated message from Deploy Deadman Switch.
             <div style="border-left: 4px solid #007bff; padding-left: 15px; margin: 20px 0;">
               ${email.body || email.content || "No message content provided."}
             </div>
+            ${qrHtml}
             <hr>
             <p><small>This message was sent automatically by Deploy Deadman Switch service.</small></p>
             <p><small>Original sender: ${userEmail}</small></p>
@@ -236,7 +263,7 @@ This message was automatically sent by Deploy Deadman Switch because ${userEmail
 ---
 
 ${email.body || email.content || "No message content provided."}
-
+${qrText}
 ---
 
 This message was sent automatically by Deploy Deadman Switch service.
