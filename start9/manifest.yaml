@@ -1,10 +1,10 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.11
+version: 1.0.12
 release-notes: |
-  - Fix: config fields (email credentials, Service URL) now persist across saves
-  - Config containers use inject:true to call the running service's internal API
-  - Config stored in SQLite settings table; loaded from DB at startup before email init
+  - Fix: checkin timer anchors to last activity time, not server restart time
+  - Fix: deadman countdown display shows correct remaining time after restart
+  - Feat: encrypted Legacy payload auto-generates QR code in deadman email
 license: MIT
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch

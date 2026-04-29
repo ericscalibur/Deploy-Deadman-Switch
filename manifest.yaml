@@ -1,8 +1,8 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.11
+version: 1.0.12
 release-notes: |
-  - Fix: config fields (email credentials, Service URL) now persist across saves
+  - Fix: checkin timer anchors to last activity time, not server restart time
   - Config containers use inject:true to call the running service's internal API
   - Config stored in SQLite settings table; loaded from DB at startup before email init
 license: MIT
