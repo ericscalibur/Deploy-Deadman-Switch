@@ -109,9 +109,11 @@
                 <div class="qr-scan-panel" id="qr-scan-panel">
                     <video id="qr-video" autoplay playsinline muted></video>
                     <canvas id="qr-canvas" style="display:none"></canvas>
-                    <div class="qr-status info" id="qr-status">Hold the SeedSigner screen up to your camera…</div>
                     <button type="button" class="qr-btn" id="stop-scan-btn" style="margin-top:8px">Stop</button>
                 </div>
+
+                <!-- Status shown for both live scan and photo upload -->
+                <div class="qr-status" id="qr-status"></div>
 
                 <br /><br />
                 <button type="submit" id="save-email-button">Save</button>
@@ -161,7 +163,7 @@
             // Live camera scan
             scanLiveBtn.addEventListener("click", async () => {
                 if (!navigator.mediaDevices?.getUserMedia) {
-                    alert("Camera access is not supported in this browser.");
+                    setStatus("Camera blocked. In Tor Browser: click the shield icon → Standard security level, then try again. Or use Upload photo.", "error");
                     return;
                 }
                 try {
@@ -169,6 +171,7 @@
                     video.srcObject = stream;
                     scanPanel.style.display = "block";
                     setStatus("Hold the SeedSigner screen up to your camera…", "info");
+
 
                     // Poll for QR at ~15 fps
                     scanTimer = setInterval(() => {
@@ -182,7 +185,7 @@
                         if (code?.data) onQRFound(code.data);
                     }, 67);
                 } catch (e) {
-                    setStatus("Camera permission denied.", "error");
+                    setStatus("Camera blocked. In Tor Browser: click the shield icon → Standard security level, then try again. Or use Upload photo.", "error");
                 }
             });
 

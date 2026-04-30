@@ -1,12 +1,9 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.13
+version: 1.0.14
 release-notes: |
-  - Fix: emails load from backend on login so Tor Browser session resets don't erase config
-  - Fix: Gmail App Passwords with spaces now accepted (Google displays them spaced, ignores spaces)
-  - Fix: .env loading handles values with spaces without crashing the shell
-  - Fix: checkinMethod defaults to email, removing a required field that blocked activation
-  - Feat: encrypted payload field can now be filled by scanning a SeedSigner QR live or uploading a photo
+  - Fix: QR scan status messages (success/error) now visible for photo upload, not just live scan
+  - Fix: camera blocked error now explains Tor Browser security level and how to enable it
 license: MIT
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
