@@ -1,6 +1,6 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.14
+version: 1.0.15
 release-notes: |
   - Fix: QR scan status messages (success/error) now visible for photo upload, not just live scan
   - Fix: camera blocked error now explains Tor Browser security level and how to enable it

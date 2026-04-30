@@ -120,7 +120,7 @@
             </form>
         </div>
 
-        <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+        <script src="/jsqr.min.js"></script>
         <script>
             // ── QR scanning ──────────────────────────────────────────────
 
@@ -162,8 +162,12 @@
 
             // Live camera scan
             scanLiveBtn.addEventListener("click", async () => {
+                if (!window.isSecureContext) {
+                    setStatus("Camera requires a secure connection. Access Deploy via its HTTPS LAN address (e.g. https://start9.local) to use Scan live. Or use Upload photo.", "error");
+                    return;
+                }
                 if (!navigator.mediaDevices?.getUserMedia) {
-                    setStatus("Camera blocked. In Tor Browser: click the shield icon → Standard security level, then try again. Or use Upload photo.", "error");
+                    setStatus("Camera unavailable. Your browser may be blocking it — try accessing Deploy via its HTTPS LAN address, or use Upload photo.", "error");
                     return;
                 }
                 try {
@@ -185,7 +189,13 @@
                         if (code?.data) onQRFound(code.data);
                     }, 67);
                 } catch (e) {
-                    setStatus("Camera blocked. In Tor Browser: click the shield icon → Standard security level, then try again. Or use Upload photo.", "error");
+                    if (e.name === "NotAllowedError") {
+                        setStatus("Camera permission denied. Click Allow when the browser asks, or use Upload photo.", "error");
+                    } else if (e.name === "NotFoundError") {
+                        setStatus("No camera found on this device.", "error");
+                    } else {
+                        setStatus("Camera error: " + e.message + ". Try Upload photo instead.", "error");
+                    }
                 }
             });
 
