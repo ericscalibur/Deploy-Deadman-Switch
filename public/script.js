@@ -43,13 +43,11 @@ document.addEventListener("DOMContentLoaded", async () => {
             // Hide the login page and show the setup page
             loginPage.style.display = "none";
             setupPage.style.display = "block";
-            // Sync emails from localStorage to backend on login
-            await syncEmailsToBackend();
-            // Load emails when setup page is shown
-            loadEmails();
-            // Restore form selections
+            // Load emails from backend (source of truth; localStorage clears on Tor Browser exit)
+            await loadEmailsFromBackend();
+            // Restore form selections from localStorage (overwritten by syncWithBackend if switch is active)
             restoreFormSelections();
-            // Initialize countdown timers
+            // Initialize countdown timers (syncWithBackend inside will restore interval settings if active)
             loadSavedActivity();
             if (deadmanSwitchActivated) {
               logActivity(); // Log current login as activity
@@ -137,6 +135,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Function to handle deployment
   async function activateDeadmanSwitch() {
+    // Snapshot current form values before reading localStorage
+    saveFormSelections();
+
     // Validate that all required settings are selected
     const savedFormData = JSON.parse(
       localStorage.getItem("formSelections") || "{}",
@@ -144,10 +145,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const emails = JSON.parse(localStorage.getItem("emails") || "[]");
 
     // Check if user has made all required selections
-    if (!savedFormData.checkinMethod) {
-      alert("Please select a check-in method");
-      return;
-    }
     if (!savedFormData.checkinInterval) {
       alert("Please select a check-in interval");
       return;
@@ -371,6 +368,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     populateEmailsTable(emails);
   }
 
+  // Load emails from the backend (used on login so Tor Browser session clears don't lose data)
+  async function loadEmailsFromBackend() {
+    const password = localStorage.getItem("userPassword");
+    if (!password) { loadEmails(); return; }
+    try {
+      const response = await fetch(
+        `/deadman/emails?password=${encodeURIComponent(password)}`,
+        { method: "GET", credentials: "include" }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const emails = data.emails || [];
+        localStorage.setItem("emails", JSON.stringify(emails));
+        populateEmailsTable(emails);
+      } else {
+        loadEmails();
+      }
+    } catch (e) {
+      loadEmails();
+    }
+  }
+
   // Function to save form selections
   function saveFormSelections() {
     const checkinValue = document.getElementById("checkin-value")?.value;
@@ -396,13 +415,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const savedFormData = JSON.parse(
       localStorage.getItem("formSelections") || "{}",
     );
-
-    if (savedFormData.checkinMethod) {
-      const checkinMethodInput = document.querySelector(
-        `input[name="checkin-method"][value="${savedFormData.checkinMethod}"]`,
-      );
-      if (checkinMethodInput) checkinMethodInput.checked = true;
-    }
 
     if (savedFormData.checkinInterval) {
       const [value, unit] = savedFormData.checkinInterval.split("-");
@@ -568,6 +580,18 @@ document.addEventListener("DOMContentLoaded", async () => {
           localStorage.setItem("deadmanSwitchActivated", "true");
           localStorage.setItem("lastActivity", data.lastActivity);
 
+          // Restore interval settings from the active switch so the form
+          // shows the correct values even after Tor Browser clears localStorage
+          if (data.settings) {
+            const formData = {
+              checkinMethod: "email",
+              checkinInterval: data.settings.checkinInterval,
+              inactivityPeriod: data.settings.inactivityPeriod,
+            };
+            localStorage.setItem("formSelections", JSON.stringify(formData));
+            restoreFormSelections();
+          }
+
           // Update button to show deactivate option
           updateButtonState("active");
         } else {
@@ -699,13 +723,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       // User is logged in
       loginPage.style.display = "none";
       setupPage.style.display = "block";
-      // Sync emails from localStorage to backend on login
-      await syncEmailsToBackend();
-      // Load emails when setup page is shown
-      loadEmails();
-      // Restore form selections
+      // Load emails from backend (source of truth; localStorage clears on Tor Browser exit)
+      await loadEmailsFromBackend();
+      // Restore form selections from localStorage (overwritten by syncWithBackend if switch is active)
       restoreFormSelections();
-      // Initialize countdown timers
+      // Initialize countdown timers (syncWithBackend inside will restore interval settings if active)
       loadSavedActivity();
       if (deadmanSwitchActivated) {
         // Check deadman status and update button accordingly

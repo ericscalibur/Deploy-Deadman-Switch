@@ -752,9 +752,8 @@ router.post("/activate", authenticateToken, async (req, res) => {
 
     const userId = req.user.userId;
     const userEmail = req.user.email;
-    const { checkinMethod, checkinInterval, inactivityPeriod, password } =
-      req.body;
-
+    const { checkinInterval, inactivityPeriod, password } = req.body;
+    const checkinMethod = req.body.checkinMethod || "email";
     console.log("🔥 EXTRACTED VALUES:");
     console.log("  checkinInterval =", checkinInterval);
     console.log("  typeof =", typeof checkinInterval);
@@ -1276,8 +1275,8 @@ router.get("/test-intervals", (req, res) => {
 
 router.post("/debug-activation", authenticateToken, (req, res) => {
   try {
-    const { checkinMethod, checkinInterval, inactivityPeriod, password } =
-      req.body;
+    const { checkinInterval, inactivityPeriod, password } = req.body;
+    const checkinMethod = req.body.checkinMethod || "email";
 
     console.log("🔍 DEBUG-ACTIVATION: Raw request body =", req.body);
     console.log(`🔍 DEBUG-ACTIVATION: checkinInterval = "${checkinInterval}"`);

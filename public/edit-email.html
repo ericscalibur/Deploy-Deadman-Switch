@@ -5,6 +5,61 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Edit Email</title>
         <link rel="stylesheet" href="styles.css" />
+        <style>
+            .qr-divider {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin: 12px 0 10px;
+                color: ghostwhite;
+                font-size: 13px;
+                opacity: 0.8;
+            }
+            .qr-divider::before,
+            .qr-divider::after {
+                content: "";
+                flex: 1;
+                height: 1px;
+                background: rgba(255,255,255,0.3);
+            }
+            .qr-buttons {
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .qr-btn {
+                background: rgba(255,255,255,0.15);
+                color: ghostwhite;
+                border: 1px solid rgba(255,255,255,0.4);
+                border-radius: 6px;
+                padding: 8px 14px;
+                cursor: pointer;
+                font-size: 14px;
+                transition: background 0.2s;
+            }
+            .qr-btn:hover {
+                background: rgba(255,255,255,0.25);
+            }
+            .qr-scan-panel {
+                margin-top: 12px;
+                display: none;
+            }
+            .qr-scan-panel video {
+                width: 100%;
+                max-width: 320px;
+                border-radius: 6px;
+                border: 2px solid rgba(255,255,255,0.3);
+                display: block;
+            }
+            .qr-status {
+                margin-top: 6px;
+                font-size: 13px;
+                min-height: 18px;
+            }
+            .qr-status.success { color: #5de88a; }
+            .qr-status.error   { color: #ff7b7b; }
+            .qr-status.info    { color: ghostwhite; opacity: 0.75; }
+        </style>
     </head>
     <body>
         <div class="container">
@@ -40,40 +95,146 @@
                     rows="4"
                     cols="50"
                     placeholder="Paste encrypted Legacy ciphertext here..."
-                ></textarea
-                ><br /><br />
+                ></textarea>
 
+                <!-- QR input alternatives -->
+                <div class="qr-divider">or fill from SeedSigner</div>
+                <div class="qr-buttons">
+                    <button type="button" class="qr-btn" id="scan-live-btn">📷 Scan live</button>
+                    <button type="button" class="qr-btn" id="upload-photo-btn">🖼 Upload photo</button>
+                </div>
+                <input type="file" id="qr-photo-input" accept="image/*" style="display:none" />
+
+                <!-- Live scanner -->
+                <div class="qr-scan-panel" id="qr-scan-panel">
+                    <video id="qr-video" autoplay playsinline muted></video>
+                    <canvas id="qr-canvas" style="display:none"></canvas>
+                    <div class="qr-status info" id="qr-status">Hold the SeedSigner screen up to your camera…</div>
+                    <button type="button" class="qr-btn" id="stop-scan-btn" style="margin-top:8px">Stop</button>
+                </div>
+
+                <br /><br />
                 <button type="submit" id="save-email-button">Save</button>
             </form>
         </div>
-        <script>
-            document.addEventListener("DOMContentLoaded", () => {
-                const form = document.getElementById("edit-email-form");
-                const emailAddressInput =
-                    document.getElementById("email-address");
-                const emailContentTextarea =
-                    document.getElementById("email-content");
-                const emailPayloadTextarea =
-                    document.getElementById("email-payload");
-                const saveButton = document.getElementById("save-email-button");
 
-                // Get the email index from the URL parameters
-                const urlParams = new URLSearchParams(window.location.search);
+        <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+        <script>
+            // ── QR scanning ──────────────────────────────────────────────
+
+            const payloadTextarea = document.getElementById("email-payload");
+            const scanLiveBtn     = document.getElementById("scan-live-btn");
+            const uploadPhotoBtn  = document.getElementById("upload-photo-btn");
+            const photoInput      = document.getElementById("qr-photo-input");
+            const scanPanel       = document.getElementById("qr-scan-panel");
+            const video           = document.getElementById("qr-video");
+            const canvas          = document.getElementById("qr-canvas");
+            const statusEl        = document.getElementById("qr-status");
+            const stopScanBtn     = document.getElementById("stop-scan-btn");
+
+            let scanTimer = null;
+            let stream    = null;
+
+            function setStatus(msg, type = "info") {
+                statusEl.textContent = msg;
+                statusEl.className = "qr-status " + type;
+            }
+
+            function stopCamera() {
+                clearInterval(scanTimer);
+                scanTimer = null;
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                    stream = null;
+                }
+                scanPanel.style.display = "none";
+            }
+
+            function onQRFound(text) {
+                stopCamera();
+                payloadTextarea.value = text;
+                setStatus("QR scanned successfully.", "success");
+                // Clear status after 3s
+                setTimeout(() => { if (statusEl.textContent === "QR scanned successfully.") setStatus(""); }, 3000);
+            }
+
+            // Live camera scan
+            scanLiveBtn.addEventListener("click", async () => {
+                if (!navigator.mediaDevices?.getUserMedia) {
+                    alert("Camera access is not supported in this browser.");
+                    return;
+                }
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                    video.srcObject = stream;
+                    scanPanel.style.display = "block";
+                    setStatus("Hold the SeedSigner screen up to your camera…", "info");
+
+                    // Poll for QR at ~15 fps
+                    scanTimer = setInterval(() => {
+                        if (video.readyState < video.HAVE_ENOUGH_DATA) return;
+                        canvas.width  = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        const ctx = canvas.getContext("2d");
+                        ctx.drawImage(video, 0, 0);
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+                        if (code?.data) onQRFound(code.data);
+                    }, 67);
+                } catch (e) {
+                    setStatus("Camera permission denied.", "error");
+                }
+            });
+
+            stopScanBtn.addEventListener("click", stopCamera);
+
+            // Photo upload decode
+            uploadPhotoBtn.addEventListener("click", () => photoInput.click());
+
+            photoInput.addEventListener("change", () => {
+                const file = photoInput.files[0];
+                if (!file) return;
+                photoInput.value = "";
+
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+                img.onload = () => {
+                    canvas.width  = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+                    if (code?.data) {
+                        onQRFound(code.data);
+                    } else {
+                        setStatus("Could not read QR from photo. Try better lighting or use Scan live.", "error");
+                        setTimeout(() => { setStatus(""); }, 4000);
+                    }
+                };
+                img.onerror = () => { setStatus("Could not load image.", "error"); URL.revokeObjectURL(url); };
+                img.src = url;
+            });
+
+            // ── Form load / save ─────────────────────────────────────────
+
+            document.addEventListener("DOMContentLoaded", () => {
+                const form                 = document.getElementById("edit-email-form");
+                const emailAddressInput    = document.getElementById("email-address");
+                const emailContentTextarea = document.getElementById("email-content");
+                const saveButton           = document.getElementById("save-email-button");
+
+                const urlParams  = new URLSearchParams(window.location.search);
                 const emailIndex = urlParams.get("index");
 
-                // Fetch email data from the server based on the emailIndex
-                // and populate the form fields.  If emailIndex is null, then
-                // it's a new email.
                 if (emailIndex !== null) {
-                    // Load existing email data
-                    const emails = JSON.parse(
-                        localStorage.getItem("emails") || "[]",
-                    );
-                    const email = emails[emailIndex];
+                    const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+                    const email  = emails[emailIndex];
                     if (email) {
-                        emailAddressInput.value = email.address;
+                        emailAddressInput.value    = email.address;
                         emailContentTextarea.value = email.content;
-                        emailPayloadTextarea.value = email.payload || "";
+                        payloadTextarea.value      = email.payload || "";
                     }
                 }
 
@@ -82,35 +243,25 @@
 
                     const emailAddress = emailAddressInput.value;
                     const emailContent = emailContentTextarea.value;
-                    const emailPayload = emailPayloadTextarea.value.trim();
+                    const emailPayload = payloadTextarea.value.trim();
 
-                    // Send the email data to the server to save or update
-                    // the email. Include the emailIndex if it's an update.
                     try {
                         const password = localStorage.getItem("userPassword");
                         const response = await fetch("/deadman/emails", {
                             method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                            },
-                            credentials: "include", // Include HTTP-only cookie
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
                             body: JSON.stringify({
                                 emailAddress,
                                 emailContent,
                                 emailPayload: emailPayload || null,
-                                emailIndex: emailIndex
-                                    ? parseInt(emailIndex)
-                                    : null,
+                                emailIndex: emailIndex ? parseInt(emailIndex) : null,
                                 password: password,
                             }),
                         });
 
                         if (response.ok) {
-                            // Also save to localStorage for immediate UI update
-                            const emails = JSON.parse(
-                                localStorage.getItem("emails") || "[]",
-                            );
-
+                            const emails = JSON.parse(localStorage.getItem("emails") || "[]");
                             const emailData = {
                                 address: emailAddress,
                                 content: emailContent,
@@ -123,22 +274,12 @@
                                 emails.push(emailData);
                             }
 
-                            localStorage.setItem(
-                                "emails",
-                                JSON.stringify(emails),
-                            );
-
-                            // Show success message
+                            localStorage.setItem("emails", JSON.stringify(emails));
                             alert("Email saved successfully!");
-
-                            // After saving, redirect back to the setup page
                             window.location.href = "/index.html";
                         } else {
                             const errorData = await response.json();
-                            alert(
-                                "Failed to save email: " +
-                                    (errorData.message || "Unknown error"),
-                            );
+                            alert("Failed to save email: " + (errorData.message || "Unknown error"));
                         }
                     } catch (error) {
                         alert("Failed to save email");

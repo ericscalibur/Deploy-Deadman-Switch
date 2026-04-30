@@ -12,11 +12,13 @@ if [ ! -f /app/data/.env ]; then
     python3 /app/generate_secret.py --auto --out /app/data/.env
 fi
 
-# Load .env into the environment
+# Load .env into the environment — use line-by-line export so values with
+# spaces (e.g. Gmail App Passwords copied with spaces) don't crash the shell
 if [ -f /app/data/.env ]; then
-    set -a
-    source /app/data/.env
-    set +a
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in '#'*|'') continue ;; esac
+        export "$line" 2>/dev/null || true
+    done < /app/data/.env
 fi
 
 # Start9 handles all SSL/Tor proxying — container serves plain HTTP on 3000 only

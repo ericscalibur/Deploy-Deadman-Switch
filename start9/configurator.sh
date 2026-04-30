@@ -130,7 +130,8 @@ set_config() {
 
     EMAIL_PROVIDER=$(echo "$CONFIG_INPUT" | yq e '.email_provider // "gmail"' -)
     GMAIL_USER=$(echo "$CONFIG_INPUT" | yq e '.gmail_user // ""' -)
-    GMAIL_PASS=$(echo "$CONFIG_INPUT" | yq e '.gmail_password // ""' -)
+    # Strip spaces: Google displays App Passwords as "xxxx xxxx xxxx xxxx" but spaces are ignored
+    GMAIL_PASS=$(echo "$CONFIG_INPUT" | yq e '.gmail_password // ""' - | tr -d ' ')
     SMTP_HOST=$(echo "$CONFIG_INPUT" | yq e '.smtp_host // ""' -)
     SMTP_PORT=$(echo "$CONFIG_INPUT" | yq e '.smtp_port // 587' -)
     SMTP_USER=$(echo "$CONFIG_INPUT" | yq e '.smtp_user // ""' -)
