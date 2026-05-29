@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Deploy: Deadman Switch</title>
+  <link rel="icon" type="image/png" href="favicon.png" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -39,8 +40,8 @@
       top: 0;
       z-index: 100;
     }
-    .nav-logo { font-size: 1.1rem; font-weight: 700; color: #fff; letter-spacing: 1px; }
-    .nav-logo span { color: var(--accent2); }
+    .nav-logo { font-size: 1.1rem; font-weight: 700; color: #fff; letter-spacing: 1px; display: flex; align-items: center; gap: 0.5rem; }
+    .nav-logo img { height: 28px; width: auto; }
     .nav-links { display: flex; gap: 1.5rem; align-items: center; }
     .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
     .nav-links a:hover { color: var(--text); }
@@ -170,7 +171,7 @@
 <body>
 
   <nav>
-    <div class="nav-logo">⏱ <span>Deploy</span>: Deadman Switch</div>
+    <div class="nav-logo"><img src="favicon.png" alt="Deploy logo" /> Deploy: Deadman Switch</div>
     <div class="nav-links">
       <a href="#how-it-works">How it works</a>
       <a href="https://github.com/ericscalibur/Deploy-Deadman-Switch" class="btn btn-accent" target="_blank">GitHub</a>
@@ -178,8 +179,7 @@
   </nav>
 
   <div class="hero">
-    <div class="hero-badge">⏱ Personal Security Tool</div>
-    <h1>The <span>Deadman</span> Switch</h1>
+    <h1>Deploy: Deadman Switch</h1>
     <p>If you stop checking in, your designated emails are automatically sent. Set it and forget it — until you can't.</p>
     <div class="hero-actions">
       <a href="https://github.com/ericscalibur/Deploy-Deadman-Switch" class="btn btn-accent btn-lg" target="_blank">View on GitHub</a>
