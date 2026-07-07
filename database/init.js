@@ -72,6 +72,7 @@ function initializeDatabase() {
                 is_active BOOLEAN DEFAULT 1,
                 activated_at DATETIME,
                 expires_at DATETIME,
+                server_encrypted_emails TEXT, -- SECRET_KEY-encrypted delivery envelope, recoverable after restart
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             );
@@ -155,6 +156,26 @@ function initializeDatabase() {
                 }
                 console.log('Settings table created or already exists');
             });
+
+            // Migration: add server_encrypted_emails to existing deadman_sessions
+            // tables (CREATE TABLE IF NOT EXISTS won't add columns to older DBs).
+            // Issued as a single serialized statement so it completes before
+            // db.close() below; a "duplicate column" error just means it already
+            // exists and is safely ignored (keeps this idempotent).
+            db.run(
+                'ALTER TABLE deadman_sessions ADD COLUMN server_encrypted_emails TEXT;',
+                (alterErr) => {
+                    if (alterErr) {
+                        if (/duplicate column name/i.test(alterErr.message)) {
+                            console.log('Migration: server_encrypted_emails column already exists');
+                        } else {
+                            console.error('Error adding server_encrypted_emails column:', alterErr.message);
+                        }
+                    } else {
+                        console.log('Migrated: added server_encrypted_emails column to deadman_sessions');
+                    }
+                },
+            );
 
             // Create indexes
             createIndexes.forEach((indexSQL, i) => {

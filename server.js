@@ -1,4 +1,7 @@
+// Load base .env, then overlay the data-volume .env (written by configurator
+// file fallback when the service isn't running during config save).
 require("dotenv").config();
+require("dotenv").config({ path: "/app/data/.env", override: true });
 
 const express = require("express");
 const https = require("https");

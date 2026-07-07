@@ -69,3 +69,7 @@ releases/
 *.s9pk
 *.tar.gz
 docker-images/
+build/
+
+# Test artifacts
+qr-test.png

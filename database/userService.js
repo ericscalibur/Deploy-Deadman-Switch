@@ -335,6 +335,25 @@ class UserService {
     });
   }
 
+  // Persist the SECRET_KEY-encrypted delivery envelope for an active session so
+  // the switch can fire unattended after a server restart (when the user's
+  // password is not available to decrypt the primary, password-encrypted copy).
+  async saveServerRecoverableEmails(sessionToken, encryptedBlob) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        "UPDATE deadman_sessions SET server_encrypted_emails = ? WHERE session_token = ?",
+        [encryptedBlob, sessionToken],
+        function (err) {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(this.changes > 0);
+          }
+        },
+      );
+    });
+  }
+
   // Update deadman session activity
   async updateSessionActivity(sessionToken) {
     return new Promise((resolve, reject) => {
@@ -410,7 +429,30 @@ class UserService {
     });
   }
 
-  // Get all active deadman sessions for recovery
+  // Get all sessions that still need recovery on startup: every session that
+  // has not been triggered/closed (is_active = 1), INCLUDING ones whose
+  // deadline already passed while the server was down — recovery must fire
+  // those, not ignore them.
+  async getAllRecoverableSessions() {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        `SELECT ds.*, u.email
+                 FROM deadman_sessions ds
+                 JOIN users u ON ds.user_id = u.id
+                 WHERE ds.is_active = 1`,
+        [],
+        (err, sessions) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(sessions || []);
+          }
+        },
+      );
+    });
+  }
+
+  // Get all active (not-yet-expired) deadman sessions
   async getAllActiveSessions() {
     return new Promise((resolve, reject) => {
       this.db.all(

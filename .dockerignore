@@ -3,6 +3,8 @@
 
 # Exclude Docker build artifacts
 docker-images/
+image.tar.gz
+*.tar.gz
 Dockerfile
 .dockerignore
 

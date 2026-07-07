@@ -1,10 +1,12 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.15
+version: 1.0.34
 release-notes: |
-  - Fix: QR scan status messages (success/error) now visible for photo upload, not just live scan
-  - Fix: camera blocked error now explains Tor Browser security level and how to enable it
-license: MIT
+  - Fix: deadman emails now send after a server restart (recipients are
+    recovered from a server-key-encrypted copy instead of being lost)
+  - Fix: switches that expire while the server is down now fire on next startup
+  - Fix: a switch that cannot deliver now alerts the owner instead of silently closing
+license: GPL-3.0
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
 upstream-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
@@ -52,7 +54,6 @@ config:
     entrypoint: configurator.sh
     args: ["get"]
     io-format: yaml
-    inject: true
     mounts:
       main: /app/data
   set:
@@ -61,7 +62,6 @@ config:
     entrypoint: configurator.sh
     args: ["set"]
     io-format: yaml
-    inject: true
     mounts:
       main: /app/data
 

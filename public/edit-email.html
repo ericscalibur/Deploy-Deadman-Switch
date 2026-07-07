@@ -5,6 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Edit Email</title>
         <link rel="stylesheet" href="styles.css" />
+        <link rel="icon" type="image/png" href="/favicon.png" />
         <style>
             .qr-divider {
                 display: flex;
@@ -52,13 +53,38 @@
                 display: block;
             }
             .qr-status {
-                margin-top: 6px;
+                margin-top: 8px;
                 font-size: 13px;
                 min-height: 18px;
+                border-radius: 5px;
+                padding: 0;
+                transition: padding 0.15s;
             }
-            .qr-status.success { color: #5de88a; }
-            .qr-status.error   { color: #ff7b7b; }
-            .qr-status.info    { color: ghostwhite; opacity: 0.75; }
+            .qr-status:not(:empty) { padding: 7px 10px; }
+            .qr-status.success { color: #5de88a; background: rgba(93,232,138,0.1); }
+            .qr-status.error   { color: #ff7b7b; background: rgba(255,123,123,0.12); }
+            .qr-status.info    { color: ghostwhite; opacity: 0.85; background: rgba(255,255,255,0.07); }
+            .photo-preview {
+                display: none;
+                align-items: center;
+                gap: 10px;
+                margin-top: 10px;
+            }
+            .photo-preview img {
+                width: 64px;
+                height: 64px;
+                object-fit: cover;
+                border-radius: 6px;
+                border: 2px solid rgba(255,255,255,0.3);
+                display: block;
+            }
+            .photo-badge {
+                position: absolute;
+                bottom: -8px;
+                right: -8px;
+                font-size: 17px;
+                line-height: 1;
+            }
         </style>
     </head>
     <body>
@@ -100,10 +126,20 @@
                 <!-- QR input alternatives -->
                 <div class="qr-divider">or fill from SeedSigner</div>
                 <div class="qr-buttons">
-                    <button type="button" class="qr-btn" id="scan-live-btn">📷 Scan live</button>
+                    <button type="button" class="qr-btn" id="scan-live-btn" title="Requires HTTPS — not available on the .onion address">📷 Scan live</button>
                     <button type="button" class="qr-btn" id="upload-photo-btn">🖼 Upload photo</button>
                 </div>
+
+                <!-- Status sits right under buttons so it's always visible -->
+                <div class="qr-status" id="qr-status"></div>
+
                 <input type="file" id="qr-photo-input" accept="image/*" style="display:none" />
+                <div class="photo-preview" id="photo-preview">
+                    <div style="position:relative; display:inline-block;">
+                        <img id="photo-thumb" alt="uploaded photo" />
+                        <span class="photo-badge" id="photo-badge"></span>
+                    </div>
+                </div>
 
                 <!-- Live scanner -->
                 <div class="qr-scan-panel" id="qr-scan-panel">
@@ -112,15 +148,16 @@
                     <button type="button" class="qr-btn" id="stop-scan-btn" style="margin-top:8px">Stop</button>
                 </div>
 
-                <!-- Status shown for both live scan and photo upload -->
-                <div class="qr-status" id="qr-status"></div>
-
                 <br /><br />
                 <button type="submit" id="save-email-button">Save</button>
             </form>
         </div>
 
         <script src="/jsqr.min.js"></script>
+        <script src="/zxing.min.js"></script>
+        <script src="/pako_inflate.min.js"></script>
+        <script src="/upng.js"></script>
+        <script src="/jpegdecoder.js"></script>
         <script>
             // ── QR scanning ──────────────────────────────────────────────
 
@@ -133,9 +170,38 @@
             const canvas          = document.getElementById("qr-canvas");
             const statusEl        = document.getElementById("qr-status");
             const stopScanBtn     = document.getElementById("stop-scan-btn");
+            const photoPreview    = document.getElementById("photo-preview");
+            const photoThumb      = document.getElementById("photo-thumb");
+            const photoBadge      = document.getElementById("photo-badge");
 
             let scanTimer = null;
             let stream    = null;
+
+            // Disable Scan live upfront if camera API is unavailable (http:// .onion, etc.)
+            if (!navigator.mediaDevices?.getUserMedia) {
+                scanLiveBtn.disabled = true;
+                scanLiveBtn.title = "Camera requires HTTPS — not available on the .onion address. Use Upload photo instead.";
+                scanLiveBtn.style.opacity = "0.45";
+                scanLiveBtn.style.cursor = "not-allowed";
+            }
+
+            function contrastStretch(ctx, w, h) {
+                const img = ctx.getImageData(0, 0, w, h);
+                const d = img.data;
+                let lo = 255, hi = 0;
+                for (let i = 0; i < d.length; i += 4) {
+                    const v = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+                const range = hi - lo || 1;
+                for (let i = 0; i < d.length; i += 4) {
+                    const v = Math.round(((0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) - lo) / range * 255);
+                    d[i] = d[i + 1] = d[i + 2] = v;
+                }
+                ctx.putImageData(img, 0, 0);
+                return ctx.getImageData(0, 0, w, h);
+            }
 
             function setStatus(msg, type = "info") {
                 statusEl.textContent = msg;
@@ -163,13 +229,18 @@
             // Live camera scan
             scanLiveBtn.addEventListener("click", async () => {
                 if (!window.isSecureContext) {
-                    setStatus("Camera requires a secure connection. Access Deploy via its HTTPS LAN address (e.g. https://start9.local) to use Scan live. Or use Upload photo.", "error");
+                    setStatus("Camera blocked: page is not a secure context. Access Deploy via its HTTPS LAN address in a regular browser to use Scan live.", "error");
                     return;
                 }
-                if (!navigator.mediaDevices?.getUserMedia) {
-                    setStatus("Camera unavailable. Your browser may be blocking it — try accessing Deploy via its HTTPS LAN address, or use Upload photo.", "error");
+                if (!navigator.mediaDevices) {
+                    setStatus("Camera blocked: navigator.mediaDevices is unavailable. This can happen on http:// even for .onion — try the HTTPS LAN address in a regular browser.", "error");
                     return;
                 }
+                if (!navigator.mediaDevices.getUserMedia) {
+                    setStatus("Camera blocked: getUserMedia is not available in this browser.", "error");
+                    return;
+                }
+                setStatus("Requesting camera… look for a permission prompt at the top of your browser.", "info");
                 try {
                     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                     video.srcObject = stream;
@@ -184,8 +255,8 @@
                         canvas.height = video.videoHeight;
                         const ctx = canvas.getContext("2d");
                         ctx.drawImage(video, 0, 0);
-                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+                        const imageData = contrastStretch(ctx, canvas.width, canvas.height);
+                        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
                         if (code?.data) onQRFound(code.data);
                     }, 67);
                 } catch (e) {
@@ -204,30 +275,175 @@
             // Photo upload decode
             uploadPhotoBtn.addEventListener("click", () => photoInput.click());
 
+            function stretchPixels(data) {
+                let lo = 255, hi = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    const v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+                const range = hi - lo || 1;
+                const out = new Uint8ClampedArray(data.length);
+                for (let i = 0; i < data.length; i += 4) {
+                    const v = Math.round(((0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) - lo) / range * 255);
+                    out[i] = out[i + 1] = out[i + 2] = v;
+                    out[i + 3] = 255;
+                }
+                return out;
+            }
+
+            async function decodePixelData(d1, w1, h1, d2, w2, h2, file) {
+                // 1. BarcodeDetector — no canvas read needed
+                if ("BarcodeDetector" in window) {
+                    try {
+                        const bd = new BarcodeDetector({ formats: ["qr_code"] });
+                        const bitmap = await createImageBitmap(file);
+                        const codes = await bd.detect(bitmap);
+                        console.log("[QR] BarcodeDetector:", codes.length);
+                        if (codes.length > 0) return codes[0].rawValue;
+                    } catch (e) { console.log("[QR] BarcodeDetector:", e.message); }
+                }
+
+                // 2. ZXing with RGBLuminanceSource — uses pre-extracted pixel data, no canvas read
+                try {
+                    const hints = new Map();
+                    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+                    const reader = new ZXing.MultiFormatReader();
+                    reader.setHints(hints);
+                    for (const [d, w, h] of [[d1, w1, h1], [d2, w2, h2]]) {
+                        try {
+                            const u32 = new Uint32Array(d.buffer);
+                            const lum = new ZXing.RGBLuminanceSource(u32, w, h, w, h, 0, 0);
+                            const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+                            const result = reader.decode(bmp);
+                            const text = result?.getText();
+                            console.log("[QR] ZXing", w, "x", h, ":", text ? "found" : "null");
+                            if (text) return text;
+                        } catch (e) { console.log("[QR] ZXing", w, "x", h, ":", e.message); }
+                    }
+                } catch (e) { console.log("[QR] ZXing setup:", e.message); }
+
+                // 3. jsQR with contrast stretch at both resolutions
+                for (const [d, w, h] of [[d1, w1, h1], [d2, w2, h2]]) {
+                    const stretched = stretchPixels(d);
+                    const code = jsQR(stretched, w, h, { inversionAttempts: "attemptBoth" });
+                    console.log("[QR] jsQR", w, "x", h, ":", code ? "found" : "null");
+                    if (code?.data) return code.data;
+                }
+
+                return null;
+            }
+
+            function handleDecodeResult(decoded) {
+                console.log("[QR] result:", decoded ? decoded.slice(0, 60) : "null");
+                if (decoded) {
+                    photoBadge.textContent = "✅";
+                    onQRFound(decoded);
+                } else {
+                    photoBadge.textContent = "❌";
+                    setStatus("QR could not be decoded. Make sure the entire QR is fully visible in the frame with no part cut off, then try again.", "error");
+                    setTimeout(() => setStatus(""), 8000);
+                }
+            }
+
+            function canvasFallbackDecode(file) {
+                const url = URL.createObjectURL(file);
+                const img = new Image();
+                img.onload = () => {
+                    const ctx = canvas.getContext("2d");
+                    canvas.width  = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    ctx.drawImage(img, 0, 0);
+                    let d1, w1 = canvas.width, h1 = canvas.height;
+                    try { d1 = ctx.getImageData(0, 0, w1, h1); }
+                    catch (e) {
+                        URL.revokeObjectURL(url);
+                        setStatus("Canvas read blocked: " + e.message + ". Try a different browser.", "error");
+                        return;
+                    }
+                    canvas.width  = img.naturalWidth  * 2;
+                    canvas.height = img.naturalHeight * 2;
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    let d2, w2 = canvas.width, h2 = canvas.height;
+                    try { d2 = ctx.getImageData(0, 0, w2, h2); }
+                    catch (e) { d2 = d1; w2 = w1; h2 = h1; }
+                    console.log("[QR] canvas pixel[0]:", d1.data[0], d1.data[1], d1.data[2], d1.data[3]);
+                    URL.revokeObjectURL(url);
+                    decodePixelData(d1.data, w1, h1, d2.data, w2, h2, file).then(handleDecodeResult);
+                };
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    setStatus("Could not load image.", "error");
+                };
+                img.src = url;
+            }
+
             photoInput.addEventListener("change", () => {
                 const file = photoInput.files[0];
                 if (!file) return;
                 photoInput.value = "";
 
-                const img = new Image();
-                const url = URL.createObjectURL(file);
-                img.onload = () => {
-                    canvas.width  = img.naturalWidth;
-                    canvas.height = img.naturalHeight;
-                    const ctx = canvas.getContext("2d");
-                    ctx.drawImage(img, 0, 0);
-                    URL.revokeObjectURL(url);
-                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
-                    if (code?.data) {
-                        onQRFound(code.data);
+                // Show thumbnail — object URL is for display only, no canvas pixel reads from it
+                const thumbUrl = URL.createObjectURL(file);
+                photoThumb.src = thumbUrl;
+                photoBadge.textContent = "";
+                photoPreview.style.display = "flex";
+                setStatus("Reading QR from photo…", "info");
+
+                // Read file bytes directly — bypasses Tor Browser canvas fingerprinting
+                const reader = new FileReader();
+                reader.onload = async (ev) => {
+                    URL.revokeObjectURL(thumbUrl);
+                    const buf    = ev.target.result;
+                    const isPng  = file.type === "image/png"  || file.name.toLowerCase().endsWith(".png");
+                    const isJpeg = file.type === "image/jpeg" || file.type === "image/jpg" ||
+                                   !!file.name.toLowerCase().match(/\.(jpg|jpeg)$/);
+                    let pixelData = null;
+
+                    try {
+                        if (isPng && typeof UPNG !== "undefined") {
+                            const decoded = UPNG.decode(buf);
+                            const frames  = UPNG.toRGBA8(decoded);
+                            if (frames.length > 0) {
+                                pixelData = {
+                                    data:   new Uint8ClampedArray(frames[0]),
+                                    width:  decoded.width,
+                                    height: decoded.height
+                                };
+                                console.log("[QR] UPNG pixel[0]:", pixelData.data[0], pixelData.data[1],
+                                            pixelData.data[2], pixelData.data[3]);
+                            }
+                        } else if (isJpeg && typeof window["jpeg-js"] !== "undefined") {
+                            const decoded = window["jpeg-js"].decode(buf, { useTArray: true, formatAsRGBA: true });
+                            pixelData = {
+                                data:   new Uint8ClampedArray(decoded.data.buffer),
+                                width:  decoded.width,
+                                height: decoded.height
+                            };
+                            console.log("[QR] jpeg-js pixel[0]:", pixelData.data[0], pixelData.data[1],
+                                        pixelData.data[2], pixelData.data[3]);
+                        }
+                    } catch (e) {
+                        console.log("[QR] Pure-JS decode failed:", e.message);
+                    }
+
+                    if (pixelData) {
+                        const decoded = await decodePixelData(
+                            pixelData.data, pixelData.width, pixelData.height,
+                            pixelData.data, pixelData.width, pixelData.height,
+                            file
+                        );
+                        handleDecodeResult(decoded);
                     } else {
-                        setStatus("Could not read QR from photo. Try better lighting or use Scan live.", "error");
-                        setTimeout(() => { setStatus(""); }, 4000);
+                        // Fallback for non-PNG/JPEG or missing libs — canvas draw
+                        canvasFallbackDecode(file);
                     }
                 };
-                img.onerror = () => { setStatus("Could not load image.", "error"); URL.revokeObjectURL(url); };
-                img.src = url;
+                reader.onerror = () => {
+                    URL.revokeObjectURL(thumbUrl);
+                    setStatus("Could not read image file.", "error");
+                };
+                reader.readAsArrayBuffer(file);
             });
 
             // ── Form load / save ─────────────────────────────────────────

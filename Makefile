@@ -3,7 +3,7 @@
 .PHONY: verify install
 
 PKG_ID := deadman-switch
-PKG_VERSION := 1.0.0
+PKG_VERSION := $(shell grep '^version:' start9/manifest.yaml | head -1 | awk '{print $$2}')
 TS_FILES := $(shell find start9 -name \*.ts 2>/dev/null)
 
 # Docker image name

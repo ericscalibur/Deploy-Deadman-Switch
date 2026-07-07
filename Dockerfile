@@ -1,5 +1,5 @@
-# Use Node.js 18 Alpine for smaller image size
-FROM node:18-alpine
+# Use Node.js 20 Alpine for smaller image size
+FROM node:20-alpine
 
 # Set working directory
 WORKDIR /app
@@ -13,11 +13,19 @@ RUN apk add --no-cache python3 py3-pip curl yq bash
 # Copy package files
 COPY package*.json ./
 
-# Install Node.js dependencies
+# Install Node.js dependencies (includes @zxing/library for the UMD bundle)
 RUN npm install --production
 
 # Copy application files
 COPY . .
+
+# Make ZXing UMD bundle available to the frontend
+RUN cp node_modules/@zxing/library/umd/index.min.js public/zxing.min.js
+
+# Make pure-JS image decoders available to the frontend (bypass Tor Browser canvas fingerprinting)
+RUN cp node_modules/pako/dist/pako_inflate.min.js public/pako_inflate.min.js
+RUN cp node_modules/upng-js/UPNG.js public/upng.js
+RUN cp node_modules/jpeg-js/lib/decoder.js public/jpegdecoder.js
 
 # Make Start9 scripts available in PATH
 RUN cp start9/*.sh /usr/local/bin/ && chmod +x /usr/local/bin/*.sh

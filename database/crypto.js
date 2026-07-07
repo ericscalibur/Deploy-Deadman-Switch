@@ -195,6 +195,100 @@ function decryptSettings(encryptedSettings, password, salt) {
 }
 
 /**
+ * Resolve the server-held encryption key from SECRET_KEY.
+ * SECRET_KEY is a base64-encoded 32-byte value (see generate_secret.py) also
+ * used for JWT signing. This key lives only in the environment (.env), never in
+ * the database, so a stolen DB file cannot be decrypted with it.
+ * @returns {Buffer} 32-byte AES key
+ */
+function getServerKey() {
+  const secret = process.env.SECRET_KEY;
+  if (!secret) {
+    throw new Error("SECRET_KEY is not set; cannot derive server key");
+  }
+  const key = Buffer.from(secret, "base64");
+  if (key.length !== KEY_LENGTH) {
+    throw new Error(
+      `SECRET_KEY must decode to ${KEY_LENGTH} bytes (got ${key.length})`,
+    );
+  }
+  return key;
+}
+
+/**
+ * Encrypt data under the server-held key (SECRET_KEY), for data the server must
+ * be able to recover unattended after a restart (e.g. the deadman delivery
+ * envelope). Returns a single self-contained base64 blob string.
+ *
+ * Threat model: protects against theft of the database file / backups (the key
+ * is not in the DB). It does NOT protect against full compromise of the running
+ * server, which has SECRET_KEY. Keep true secrets in recipient-encrypted
+ * payloads, not in data encrypted with this function.
+ *
+ * @param {string|object} data - Data to encrypt (JSON stringified if object)
+ * @returns {string} Compact JSON blob: {v, iv, tag, data} (all base64)
+ */
+function encryptWithServerKey(data) {
+  const plaintext = typeof data === "string" ? data : JSON.stringify(data);
+  const key = getServerKey();
+  const iv = generateIV();
+
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  let encrypted = cipher.update(plaintext, "utf8", "base64");
+  encrypted += cipher.final("base64");
+  const authTag = cipher.getAuthTag();
+
+  return JSON.stringify({
+    v: 1,
+    iv: iv.toString("base64"),
+    tag: authTag.toString("base64"),
+    data: encrypted,
+  });
+}
+
+/**
+ * Decrypt a blob produced by encryptWithServerKey.
+ * @param {string} blob - The JSON blob string
+ * @returns {string} Decrypted plaintext
+ */
+function decryptWithServerKey(blob) {
+  const { iv, tag, data } = typeof blob === "string" ? JSON.parse(blob) : blob;
+  const key = getServerKey();
+
+  const decipher = crypto.createDecipheriv(
+    ALGORITHM,
+    key,
+    Buffer.from(iv, "base64"),
+  );
+  decipher.setAuthTag(Buffer.from(tag, "base64"));
+
+  let decrypted = decipher.update(data, "base64", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+/**
+ * Encrypt an emails array under the server key and return a storable blob.
+ * @param {array} emails - Array of email objects
+ * @returns {string} Server-key blob string
+ */
+function encryptEmailsWithServerKey(emails) {
+  if (!Array.isArray(emails)) {
+    throw new Error("Emails must be an array");
+  }
+  return encryptWithServerKey(emails);
+}
+
+/**
+ * Decrypt an emails blob produced by encryptEmailsWithServerKey.
+ * @param {string} blob - Server-key blob string
+ * @returns {array} Decrypted emails array
+ */
+function decryptEmailsWithServerKey(blob) {
+  return JSON.parse(decryptWithServerKey(blob));
+}
+
+/**
  * Generate secure session token
  * @returns {string} Random session token
  */
@@ -255,6 +349,13 @@ module.exports = {
   decryptEmails,
   encryptSettings,
   decryptSettings,
+
+  // Server-key encryption (for restart-recoverable delivery envelope)
+  getServerKey,
+  encryptWithServerKey,
+  decryptWithServerKey,
+  encryptEmailsWithServerKey,
+  decryptEmailsWithServerKey,
 
   // Token generation
   generateSessionToken,

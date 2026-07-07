@@ -190,6 +190,32 @@ This is an automated message from Deploy Deadman Switch.
     }
   }
 
+  // Alert the account owner about an operational problem with their switch
+  // (e.g. it expired but the recipients could not be recovered after a restart).
+  async sendAlertEmail(userEmail, subject, bodyHtml, bodyText) {
+    if (!this.initialized) {
+      console.log("❌ Email service not initialized for alert email");
+      return false;
+    }
+
+    try {
+      const mailOptions = {
+        from: `"Deploy Deadman Switch" <${process.env.EMAIL_USER || "noreply@deploy-deadman.com"}>`,
+        to: userEmail,
+        subject,
+        html: bodyHtml,
+        text: bodyText || bodyHtml.replace(/<[^>]+>/g, ""),
+      };
+
+      const { info } = await this._sendWithFallback(mailOptions);
+      console.log(`✅ Alert email sent to ${userEmail}`, info.messageId);
+      return true;
+    } catch (error) {
+      console.error(`❌ Failed to send alert email to ${userEmail}:`, error);
+      return false;
+    }
+  }
+
   async sendDeadmanEmails(userEmail, configuredEmails) {
     if (!this.initialized) {
       console.log("❌ Email service not initialized for deadman emails");
@@ -220,7 +246,7 @@ This is an automated message from Deploy Deadman Switch.
         if (email.payload) {
           try {
             const qrDataUrl = await QRCode.toDataURL(email.payload, {
-              errorCorrectionLevel: "M",
+              errorCorrectionLevel: "L",
               margin: 2,
               width: 400,
             });
@@ -254,6 +280,7 @@ This is an automated message from Deploy Deadman Switch.
             <hr>
             <p><small>This message was sent automatically by Deploy Deadman Switch service.</small></p>
             <p><small>Original sender: ${userEmail}</small></p>
+            <p><small>If this message contains an encrypted payload, you can decrypt it using <a href="https://ericscalibur.github.io/Legacy_Encryption/index.html">Legacy</a>.</small></p>
           `,
           text: `
 Important Message
@@ -268,6 +295,7 @@ ${qrText}
 
 This message was sent automatically by Deploy Deadman Switch service.
 Original sender: ${userEmail}
+If this message contains an encrypted payload, decrypt it using Legacy: https://ericscalibur.github.io/Legacy_Encryption/index.html
           `,
         };
 

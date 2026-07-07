@@ -264,8 +264,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Function to handle new email button click
   newEmailButton.addEventListener("click", () => {
-    // Redirect to the edit email page (you'll need to create this page)
-    window.location.href = "/edit-email.html"; // Assuming you'll create edit-email.html
+    saveFormSelections();
+    window.location.href = "/edit-email.html";
   });
 
   // Function to populate the emails table
@@ -292,7 +292,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       emailCell.textContent = `${index + 1}. ${email.address}`;
       emailCell.className = "email-cell";
       emailCell.addEventListener("click", () => {
-        // Redirect to the edit email page with the email data
+        saveFormSelections();
         window.location.href = `/edit-email.html?index=${index}`;
       });
 
@@ -895,16 +895,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (response.ok) {
         const data = await response.json();
         if (data.triggered) {
-          // Deadman was triggered - clear all local data and update UI
+          // Deadman was triggered — clear switch state but keep email config
           deadmanSwitchActivated = false;
           localStorage.removeItem("deadmanSwitchActivated");
           localStorage.removeItem("lastActivity");
-          // Clear local storage
-          localStorage.removeItem("emails");
           localStorage.removeItem("formSelections");
-
-          // Reload emails (should be empty now)
-          loadEmails();
+          // Do NOT clear localStorage.emails here — the user's email list is
+          // config data, not switch state.  Wiping it on every sync cycle
+          // prevented re-arming after a trigger.  resetDeadmanData() handles
+          // the explicit "start from scratch" case.
 
           updateButtonState("triggered");
         } else {
@@ -926,6 +925,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         saveSettingsButton.textContent = "Abort";
         saveSettingsButton.className = "active-state";
         saveSettingsButton.onclick = deactivateDeadmanSwitch;
+        break;
+
+      case "triggered":
+        saveSettingsButton.textContent = "Re-arm Deadman Switch";
+        saveSettingsButton.className = "";
+        saveSettingsButton.onclick = activateDeadmanSwitch;
         break;
 
       case "inactive":
