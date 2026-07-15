@@ -1,7 +1,9 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.35
+version: 1.0.36
 release-notes: |
+  - Fix: service no longer hangs in "Stopping..." — the server now handles
+    SIGTERM (it runs as PID 1, which ignores signals by default)
   - Fix: activation is now refused with a clear error when SMTP login fails
     (previously reported success while silently sending no emails)
   - Fix: email service retries SMTP setup automatically, so corrected
@@ -35,6 +37,7 @@ main:
   mounts:
     main: /app/data
     cert: /mnt/cert
+  sigterm-timeout: 30s
 
 health-checks:
   web-ui:

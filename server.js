@@ -219,3 +219,14 @@ process.on("unhandledRejection", (reason, promise) => {
 process.on("exit", (code) => {
   console.log(`Process exiting with code: ${code}`);
 });
+
+// In the Start9 container this process runs as PID 1, which ignores SIGTERM
+// unless a handler is installed — without these the service hangs in
+// "Stopping...". Timer state is persisted and re-armed on startup, so a
+// prompt exit is safe.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, () => {
+    console.log(`Received ${signal}, shutting down`);
+    process.exit(0);
+  });
+}
