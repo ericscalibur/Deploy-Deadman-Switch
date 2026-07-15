@@ -876,6 +876,19 @@ router.post("/activate", authenticateToken, async (req, res) => {
         .json({ message: "Password required for encryption" });
     }
 
+    // Refuse to arm a switch that cannot deliver email — a silently broken
+    // SMTP transport would defeat the entire purpose of the switch.
+    const emailReady = await emailService.ensureReady();
+    if (!emailReady) {
+      console.error(
+        `❌ ACTIVATION: Email service is not working — refusing to activate switch for ${userEmail}`,
+      );
+      return res.status(503).json({
+        message:
+          "Email service is not working (SMTP login failed), so check-in and deadman emails cannot be sent. Fix EMAIL_USER/EMAIL_PASS in the server config (Gmail app passwords can be revoked) and try again. The switch was NOT activated.",
+      });
+    }
+
     // Get user's salt and current encrypted data
     const user = await userService.getUserById(userId);
     const userData = await userService.getUserData(userId, password, user.salt);

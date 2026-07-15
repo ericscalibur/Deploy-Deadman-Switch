@@ -7,7 +7,29 @@ class EmailService {
     this.transporter = null;
     this.backupTransporter = null;
     this.initialized = false;
-    this.init();
+    this._lastInitAttempt = Date.now();
+    this._initPromise = this.init().finally(() => {
+      this._initPromise = null;
+    });
+  }
+
+  // Wait for any in-flight init; if init failed, retry at most once per minute
+  // so fixed credentials start working without a server restart.
+  async ensureReady() {
+    if (this._initPromise) {
+      await this._initPromise;
+    }
+    if (this.initialized) return true;
+
+    if (Date.now() - this._lastInitAttempt >= 60000) {
+      console.log("🔁 Email service not initialized — retrying SMTP setup...");
+      this._lastInitAttempt = Date.now();
+      this._initPromise = this.init().finally(() => {
+        this._initPromise = null;
+      });
+      await this._initPromise;
+    }
+    return this.initialized;
   }
 
   _buildPrimaryTransport() {
@@ -112,7 +134,11 @@ class EmailService {
     this.initialized = false;
     this.transporter = null;
     this.backupTransporter = null;
-    await this.init();
+    this._lastInitAttempt = Date.now();
+    this._initPromise = this.init().finally(() => {
+      this._initPromise = null;
+    });
+    await this._initPromise;
   }
 
   // Send via primary, retry once with backup on failure
@@ -140,8 +166,10 @@ class EmailService {
   }
 
   async sendCheckinEmail(userEmail, checkinToken) {
-    if (!this.initialized) {
-      console.log("❌ Email service not initialized");
+    if (!(await this.ensureReady())) {
+      console.error(
+        `❌ Email service not initialized — check-in email to ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
+      );
       return false;
     }
 
@@ -193,8 +221,10 @@ This is an automated message from Deploy Deadman Switch.
   // Alert the account owner about an operational problem with their switch
   // (e.g. it expired but the recipients could not be recovered after a restart).
   async sendAlertEmail(userEmail, subject, bodyHtml, bodyText) {
-    if (!this.initialized) {
-      console.log("❌ Email service not initialized for alert email");
+    if (!(await this.ensureReady())) {
+      console.error(
+        `❌ Email service not initialized — alert email to ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
+      );
       return false;
     }
 
@@ -217,8 +247,10 @@ This is an automated message from Deploy Deadman Switch.
   }
 
   async sendDeadmanEmails(userEmail, configuredEmails) {
-    if (!this.initialized) {
-      console.log("❌ Email service not initialized for deadman emails");
+    if (!(await this.ensureReady())) {
+      console.error(
+        `❌ Email service not initialized — DEADMAN emails for ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
+      );
       return false;
     }
 
@@ -332,8 +364,12 @@ If this message contains an encrypted payload, decrypt it using Legacy: https://
   }
 
   async testEmailConnection() {
-    if (!this.initialized) {
-      return { success: false, message: "Email service not initialized" };
+    if (!(await this.ensureReady())) {
+      return {
+        success: false,
+        message:
+          "Email service not initialized — SMTP login failed. Check EMAIL_USER/EMAIL_PASS (Gmail app passwords can be revoked).",
+      };
     }
 
     try {
