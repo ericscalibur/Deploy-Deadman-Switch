@@ -24,6 +24,9 @@ releases/
 .env
 .env.*
 
+# Exclude local database (contains real user data; live DB lives on /app/data)
+database/*.db
+
 # Exclude git
 .git/
 .gitignore

@@ -1,13 +1,13 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.36
+version: 1.0.37
 release-notes: |
-  - Fix: service no longer hangs in "Stopping..." — the server now handles
-    SIGTERM (it runs as PID 1, which ignores signals by default)
-  - Fix: activation is now refused with a clear error when SMTP login fails
-    (previously reported success while silently sending no emails)
-  - Fix: email service retries SMTP setup automatically, so corrected
-    credentials start working without a service restart
+  - Fix: schema migrations now run at server startup, not just in the Start9
+    entrypoint — local/self-hosted installs were missing the
+    server_encrypted_emails column, so the restart-recovery envelope was never
+    saved (SQLITE_ERROR) and expired switches could not deliver after a reboot.
+  - The pre-built database is no longer shipped in the repo; tables are
+    created automatically on first run.
 license: GPL-3.0
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch

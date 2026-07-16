@@ -118,6 +118,13 @@ function isLocalhost(req) {
 // --- Async startup: load DB config before routes initialize emailService ---
 
 (async () => {
+  // Create tables and run schema migrations BEFORE anything opens the DB.
+  // Routes connect and recover switches at require time, so this must come
+  // first — otherwise migrations (e.g. server_encrypted_emails) never run
+  // outside the Start9 entrypoint and envelope saves fail with SQLITE_ERROR.
+  const { initializeDatabase } = require("./database/init");
+  await initializeDatabase();
+
   await loadConfigFromDB();
 
   const deadmanRoutes = require("./routes/deadman");

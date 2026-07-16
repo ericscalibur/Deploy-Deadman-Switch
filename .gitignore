@@ -46,6 +46,7 @@ logs
 
 # User data (contains sensitive information)
 data/*.json
+database/*.db
 
 # macOS
 .DS_Store
