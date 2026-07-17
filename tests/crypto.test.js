@@ -1,5 +1,6 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const {
   generateSalt,
   hashPassword,
@@ -13,6 +14,8 @@ const {
   generateSessionToken,
   generateCheckinToken,
   validateEncryptedData,
+  encryptEmailsWithServerKey,
+  decryptEmailsWithServerKey,
   ALGORITHM,
 } = require("../database/crypto");
 
@@ -194,4 +197,39 @@ describe("validateEncryptedData", () => {
     const enc = encryptData("test", "pass", salt);
     assert.equal(validateEncryptedData({ ...enc, algorithm: "des" }), false);
   });
+});
+
+describe("server-key envelope (SECRET_KEY encoding)", () => {
+  const original = process.env.SECRET_KEY;
+  const recipients = [{ address: "a@b.com", content: "hi" }];
+
+  function roundtrip(key) {
+    process.env.SECRET_KEY = key;
+    const blob = encryptEmailsWithServerKey(recipients);
+    return decryptEmailsWithServerKey(blob);
+  }
+
+  test("accepts a base64 32-byte key (generate_secret.py / auto-generated)", () => {
+    const out = roundtrip(crypto.randomBytes(32).toString("base64"));
+    assert.deepEqual(out, recipients);
+  });
+
+  test("accepts a hex 32-byte key (Start9 configurator / manual setup)", () => {
+    // A 64-char hex string base64-decodes to 48 bytes; this used to throw
+    // "SECRET_KEY must decode to 32 bytes (got 48)" and skip the envelope.
+    const out = roundtrip(crypto.randomBytes(32).toString("hex"));
+    assert.deepEqual(out, recipients);
+  });
+
+  test("derives a stable key from any other passphrase", () => {
+    const out = roundtrip("correct horse battery staple");
+    assert.deepEqual(out, recipients);
+  });
+
+  test("throws when SECRET_KEY is unset", () => {
+    delete process.env.SECRET_KEY;
+    assert.throws(() => encryptEmailsWithServerKey(recipients), /SECRET_KEY/);
+  });
+
+  process.env.SECRET_KEY = original;
 });

@@ -6,9 +6,48 @@ require("dotenv").config({ path: "/app/data/.env", override: true });
 const express = require("express");
 const https = require("https");
 const http = require("http");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const cookieParser = require("cookie-parser");
+
+const { version: APP_VERSION } = require("./package.json");
+
+// Ensure a SECRET_KEY exists before anything uses it. On Start9 the configurator
+// always provides one, so this only fires on a fresh local install where the
+// user hasn't generated a key. We generate a base64 32-byte key and persist it
+// to .env — persistence is essential: a key that changed each restart would
+// invalidate every login and make stored recovery envelopes undecryptable. An
+// existing key is never overwritten (that would orphan armed switches' envelopes).
+function ensureSecretKey() {
+  if (process.env.SECRET_KEY && process.env.SECRET_KEY.trim() !== "") {
+    return;
+  }
+  const key = crypto.randomBytes(32).toString("base64");
+  process.env.SECRET_KEY = key;
+  const envPath = path.join(__dirname, ".env");
+  try {
+    let contents = fs.existsSync(envPath)
+      ? fs.readFileSync(envPath, "utf8")
+      : "";
+    if (/^SECRET_KEY=.*$/m.test(contents)) {
+      contents = contents.replace(/^SECRET_KEY=.*$/m, `SECRET_KEY=${key}`);
+    } else {
+      if (contents.length && !contents.endsWith("\n")) contents += "\n";
+      contents += `SECRET_KEY=${key}\n`;
+    }
+    fs.writeFileSync(envPath, contents);
+    console.log("Generated a new SECRET_KEY and saved it to .env");
+  } catch (e) {
+    console.warn(
+      `Generated an in-memory SECRET_KEY but could not persist it to .env (${e.message}). ` +
+        "Set SECRET_KEY in .env to keep it stable across restarts.",
+    );
+  }
+}
+
+console.log(`Deploy Deadman Switch v${APP_VERSION} starting`);
+ensureSecretKey();
 
 const app = express();
 const port = process.env.PORT || 3000;

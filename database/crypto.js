@@ -196,9 +196,15 @@ function decryptSettings(encryptedSettings, password, salt) {
 
 /**
  * Resolve the server-held encryption key from SECRET_KEY.
- * SECRET_KEY is a base64-encoded 32-byte value (see generate_secret.py) also
- * used for JWT signing. This key lives only in the environment (.env), never in
+ * SECRET_KEY also signs JWTs. It lives only in the environment (.env), never in
  * the database, so a stolen DB file cannot be decrypted with it.
+ *
+ * The key is accepted in whatever encoding it was generated in, because the
+ * project has historically produced it two ways: generate_secret.py emits
+ * base64, and the Start9 configurator emits hex. Anything else is hashed down
+ * to 32 bytes so encryption keeps working regardless of how the operator made
+ * the key. Resolution is deterministic — a given SECRET_KEY always yields the
+ * same 32-byte key, so envelopes stay decryptable across restarts.
  * @returns {Buffer} 32-byte AES key
  */
 function getServerKey() {
@@ -206,13 +212,22 @@ function getServerKey() {
   if (!secret) {
     throw new Error("SECRET_KEY is not set; cannot derive server key");
   }
-  const key = Buffer.from(secret, "base64");
-  if (key.length !== KEY_LENGTH) {
-    throw new Error(
-      `SECRET_KEY must decode to ${KEY_LENGTH} bytes (got ${key.length})`,
-    );
+  const trimmed = secret.trim();
+
+  // Base64 of exactly 32 bytes (generate_secret.py, auto-generated key).
+  const asBase64 = Buffer.from(trimmed, "base64");
+  if (asBase64.length === KEY_LENGTH) {
+    return asBase64;
   }
-  return key;
+
+  // Hex of exactly 32 bytes (Start9 configurator, common manual method). A
+  // 64-char hex string base64-decodes to 48 bytes, so it never matches above.
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return Buffer.from(trimmed, "hex");
+  }
+
+  // Any other non-empty value: derive a stable 32-byte key by hashing it.
+  return crypto.createHash("sha256").update(secret).digest();
 }
 
 /**

@@ -175,7 +175,7 @@ process.stdout.write(JSON.stringify(cfg));
         if [ -f "$ENV_FILE" ] && grep -q "SECRET_KEY=" "$ENV_FILE"; then
             SECRET_KEY=$(grep "SECRET_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
         else
-            SECRET_KEY=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))')
+            SECRET_KEY=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')
         fi
 
         cat > "$ENV_FILE" << EOF
