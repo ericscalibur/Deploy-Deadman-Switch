@@ -1,19 +1,21 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.39
+version: 1.0.40
 release-notes: |
-  - Fix: timer state is now saved to the database immediately after a
-    check-in. A variable-scope bug made that save fail on every check-in
-    (ReferenceError), leaving the previous deadman deadline in the database
-    until the next periodic save — or indefinitely for switches restored
-    after a restart. A crash in that window could recover a stale deadline
-    and trigger the switch prematurely.
-  - Fix: switches restored after a restart rejoin the periodic state-save
-    loop after a successful check-in.
-  - Fix: database timestamps without a timezone marker are now parsed as UTC
-    during recovery. They were parsed as local time, so after a restart the
-    next check-in email was scheduled hours late (by the machine's UTC
-    offset) for users west of UTC, or too early for users east of it.
+  - Fix: the switch's database session is now closed ONLY after deadman
+    emails are confirmed delivered. Previously delivery was fire-and-forget
+    and the switch was torn down regardless, so one SMTP failure at trigger
+    time (e.g. network not yet up right after a reboot) silently lost the
+    delivery forever. On failure the switch now stays active, the owner is
+    alerted, delivery retries every 10 minutes, and any restart retries too.
+  - Fix: a switch that fired while the server was running never closed its
+    database session, so every later restart re-fired it and re-sent the
+    deadman emails to all recipients.
+  - Security: the activation endpoints no longer log the raw request body,
+    which contained the user's plaintext password.
+  - Fix: when the login session (24h) expires, the dashboard now returns to
+    the login page with an explanation instead of silently freezing the
+    countdown display while the switch keeps running server-side.
 license: GPL-3.0
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch

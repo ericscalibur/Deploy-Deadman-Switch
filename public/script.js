@@ -557,6 +557,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Function to sync with backend timer status
+  let sessionExpiredNotified = false;
   async function syncWithBackend() {
     try {
       const response = await fetch("/deadman/timer-status", {
@@ -565,6 +566,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
 
       if (response.ok) {
+        sessionExpiredNotified = false;
         const data = await response.json();
 
         if (data.active) {
@@ -601,6 +603,20 @@ document.addEventListener("DOMContentLoaded", async () => {
           if (!deadmanSwitchActivated) {
             loadEmails();
           }
+        }
+      } else if (response.status === 401 || response.status === 403) {
+        // The JWT expired (24h). Without this, the page silently keeps
+        // rendering stale local countdowns while every sync fails — the
+        // switch itself is still running server-side, but the display is
+        // dead data. Send the user back to the login page and say why.
+        if (!sessionExpiredNotified) {
+          sessionExpiredNotified = true;
+          setupPage.style.display = "none";
+          loginPage.style.display = "block";
+          alert(
+            "Your login session has expired, so the timer display is no longer live. " +
+              "Your deadman switch is still running on the server — log in again to see current status.",
+          );
         }
       } else {
         const errorText = await response.text();

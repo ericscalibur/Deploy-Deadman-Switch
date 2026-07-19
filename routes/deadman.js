@@ -337,6 +337,69 @@ async function alertUnrecoverableSwitch(userEmail) {
   }
 }
 
+// Deliver the deadman emails, closing the DB session ONLY on success (at
+// least one recipient reached). On total failure — e.g. the network is not
+// up yet when recovery fires right after boot — the session stays active so
+// a later restart re-attempts via recovery, the owner is alerted once, and
+// delivery retries every 10 minutes while the server stays up. Closing the
+// session before delivery was confirmed could silently lose the switch's
+// entire purpose on one SMTP hiccup.
+const DEADMAN_RETRY_MS = 10 * 60 * 1000;
+async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1) {
+  let sent = false;
+  try {
+    sent = await emailService.sendDeadmanEmails(userEmail, emails);
+  } catch (error) {
+    console.error(
+      `❌ DEADMAN DELIVERY: Attempt ${attempt} errored for ${userEmail}:`,
+      error,
+    );
+  }
+
+  if (sent) {
+    console.log(
+      `✅ DEADMAN DELIVERY: Emails delivered for ${userEmail} (attempt ${attempt})`,
+    );
+    if (sessionToken) {
+      try {
+        await userService.markSessionTriggered(sessionToken);
+      } catch (error) {
+        console.error(
+          `❌ DEADMAN DELIVERY: Delivered but failed to close session for ${userEmail}:`,
+          error,
+        );
+      }
+    }
+    return true;
+  }
+
+  console.error(
+    `❌ DEADMAN DELIVERY: Attempt ${attempt} failed for ${userEmail} — session stays active, retrying in ${DEADMAN_RETRY_MS / 60000} minutes`,
+  );
+  if (attempt === 1) {
+    try {
+      await emailService.sendAlertEmail(
+        userEmail,
+        "⚠️ Your Deadman Switch fired but delivery failed — retrying",
+        `<h2>⚠️ Deadman Switch delivery problem</h2>
+         <p>Your switch reached its inactivity deadline and tried to send your
+         messages, but no emails could be delivered (SMTP failure). The server
+         will keep retrying every ${DEADMAN_RETRY_MS / 60000} minutes, and a
+         restart will also retry. Check the server's email configuration.</p>`,
+      );
+    } catch (alertErr) {
+      console.error(
+        `❌ DEADMAN DELIVERY: Failure alert could not be sent to ${userEmail}:`,
+        alertErr,
+      );
+    }
+  }
+  setTimeout(() => {
+    deliverDeadmanEmails(userEmail, emails, sessionToken, attempt + 1);
+  }, DEADMAN_RETRY_MS);
+  return false;
+}
+
 async function executeDeadmanActivationRecovered(userEmail, switchData) {
   try {
     console.log(
@@ -357,28 +420,9 @@ async function executeDeadmanActivationRecovered(userEmail, switchData) {
       return;
     }
 
-    emailService
-      .sendDeadmanEmails(userEmail, emails)
-      .then((emailsSent) => {
-        if (emailsSent) {
-          console.log(
-            `✅ DEADMAN EMAILS SUCCESS: Emails sent for ${userEmail} (recovered)`,
-          );
-        } else {
-          console.error(
-            `❌ DEADMAN EMAILS FAILED: No emails sent for ${userEmail} (recovered)`,
-          );
-        }
-      })
-      .catch((error) => {
-        console.error(
-          `❌ DEADMAN EMAILS ERROR: Failed to send emails for ${userEmail} (recovered):`,
-          error,
-        );
-      });
-
-    // Mark session as triggered
-    await userService.markSessionTriggered(switchData.sessionToken);
+    // Deliver and close the session only on confirmed delivery; on failure
+    // the helper leaves the session active, alerts, and schedules retries.
+    await deliverDeadmanEmails(userEmail, emails, switchData.sessionToken);
 
     // Cleanup
     const currentSwitchData = activeDeadmanSwitches.get(userEmail);
@@ -854,34 +898,16 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
 // Activate deadman switch (encrypted database)
 router.post("/activate", authenticateToken, async (req, res) => {
   try {
-    console.log("🔥 ACTIVATION ENDPOINT HIT - START OF FUNCTION");
-    console.log("🔥 RAW req.body =", req.body);
-    console.log("🔥 req.body keys =", Object.keys(req.body));
-
     const userId = req.user.userId;
     const userEmail = req.user.email;
     const { checkinInterval, inactivityPeriod, password } = req.body;
     const checkinMethod = req.body.checkinMethod || "email";
-    console.log("🔥 EXTRACTED VALUES:");
-    console.log("  checkinInterval =", checkinInterval);
-    console.log("  typeof =", typeof checkinInterval);
-    console.log("  JSON.stringify =", JSON.stringify(checkinInterval));
 
+    // Never log req.body here — it contains the user's plaintext password.
     console.log(`🚀 ACTIVATION: Request from ${userEmail}`);
-    console.log(
-      `📋 ACTIVATION: RAW REQUEST BODY =`,
-      JSON.stringify(req.body, null, 2),
-    );
     console.log(`📋 ACTIVATION: checkinMethod = "${checkinMethod}"`);
     console.log(`📋 ACTIVATION: checkinInterval = "${checkinInterval}"`);
     console.log(`📋 ACTIVATION: inactivityPeriod = "${inactivityPeriod}"`);
-    console.log(
-      `📋 ACTIVATION: typeof checkinInterval = "${typeof checkinInterval}"`,
-    );
-    console.log(
-      `🔍 ACTIVATION: Raw req.body =`,
-      JSON.stringify(req.body, null, 2),
-    );
 
     // Password required for encryption/decryption
     if (!password) {
@@ -1244,59 +1270,22 @@ async function executeDeadmanActivation(userEmail, emails) {
       `   - Email addresses: ${emails.map((e) => e.to || e.address).join(", ")}`,
     );
 
-    // Send actual deadman emails (non-blocking)
-    emailService
-      .sendDeadmanEmails(userEmail, emails)
-      .then((emailsSent) => {
-        if (!emailsSent) {
-          console.error(
-            `❌ DEADMAN EMAILS FAILED: No emails sent for ${userEmail}`,
-          );
-          // Still record activation even if email failed
-          deadmanActivationHistory.set(userEmail, {
-            triggered: true,
-            timestamp: new Date().toISOString(),
-            emailsSent: 0,
-            reason: "inactivity_timeout",
-            status: "email_failed",
-          });
-        } else {
-          console.log(
-            `✅ DEADMAN EMAILS SUCCESS: Emails sent for ${userEmail}`,
-          );
-          // Record successful activation in history
-          deadmanActivationHistory.set(userEmail, {
-            triggered: true,
-            timestamp: new Date().toISOString(),
-            emailsSent: emails.length,
-            reason: "inactivity_timeout",
-            status: "success",
-          });
-        }
-      })
-      .catch((error) => {
-        console.error(
-          `❌ DEADMAN EMAILS ERROR: Failed to send emails for ${userEmail}:`,
-          error,
-        );
-        // Record activation even if error occurred
-        deadmanActivationHistory.set(userEmail, {
-          triggered: true,
-          timestamp: new Date().toISOString(),
-          emailsSent: 0,
-          reason: "inactivity_timeout",
-          status: "error",
-          error: error.message,
-        });
-      });
+    // Capture the session token before cleanup wipes in-memory state. Without
+    // closing the DB session on delivery, every later restart would re-fire
+    // this switch and re-send the deadman emails.
+    const activeData = activeDeadmanSwitches.get(userEmail);
+    const sessionToken = activeData ? activeData.sessionToken : null;
 
-    // Record activation immediately (before email result)
+    // Deliver and close the session only on confirmed delivery; on failure
+    // the helper leaves the session active, alerts, and schedules retries.
+    const delivered = await deliverDeadmanEmails(userEmail, emails, sessionToken);
+
     deadmanActivationHistory.set(userEmail, {
       triggered: true,
       timestamp: new Date().toISOString(),
-      emailsSent: emails.length,
+      emailsSent: delivered ? emails.length : 0,
       reason: "inactivity_timeout",
-      status: "pending",
+      status: delivered ? "success" : "delivery_failed_retrying",
     });
 
     console.log(
@@ -1448,7 +1437,7 @@ router.post("/debug-activation", authenticateToken, (req, res) => {
     const { checkinInterval, inactivityPeriod, password } = req.body;
     const checkinMethod = req.body.checkinMethod || "email";
 
-    console.log("🔍 DEBUG-ACTIVATION: Raw request body =", req.body);
+    // Never log req.body here — it contains the user's plaintext password.
     console.log(`🔍 DEBUG-ACTIVATION: checkinInterval = "${checkinInterval}"`);
     console.log(
       `🔍 DEBUG-ACTIVATION: inactivityPeriod = "${inactivityPeriod}"`,
