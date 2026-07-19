@@ -37,6 +37,21 @@ router.use((req, res, next) => {
 const activeDeadmanSwitches = new Map();
 const checkinTokens = new Map();
 
+// SQLite's CURRENT_TIMESTAMP writes "YYYY-MM-DD HH:MM:SS" in UTC with no
+// timezone marker, which new Date() parses as LOCAL time — skewing recovered
+// timers by the machine's UTC offset (e.g. check-ins scheduled 6 hours late
+// at UTC-6). Bare SQLite timestamps are treated as UTC here; ISO strings
+// (which carry a Z/offset) and epoch numbers pass through unchanged.
+function parseDbTimestamp(value) {
+  if (value === null || value === undefined) return new Date(NaN);
+  if (typeof value === "number") return new Date(value);
+  const s = String(value);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) {
+    return new Date(s.replace(" ", "T") + "Z");
+  }
+  return new Date(s);
+}
+
 // Recovery mechanism: Restore active switches from database on startup
 async function recoverActiveDeadmanSwitches() {
   try {
@@ -81,8 +96,8 @@ async function recoverActiveDeadmanSwitches() {
         const inactivityMs = session.inactivity_timeout_ms;
 
         // Calculate remaining time based on last activity
-        const lastActivity = new Date(session.last_activity).getTime();
-        const deadmanExpiry = new Date(session.expires_at).getTime();
+        const lastActivity = parseDbTimestamp(session.last_activity).getTime();
+        const deadmanExpiry = parseDbTimestamp(session.expires_at).getTime();
         const timeRemaining = deadmanExpiry - now;
 
         // A session with no valid deadline was never fully activated (e.g. a
@@ -149,7 +164,7 @@ async function recoverActiveDeadmanSwitches() {
             inactivityPeriod: getInactivityName(inactivityMs),
             emails: recoveredEmails,
           },
-          lastActivity: new Date(session.last_activity),
+          lastActivity: parseDbTimestamp(session.last_activity),
           nextCheckin: lastActivity + checkinIntervalMs,
           deadmanActivation: deadmanExpiry,
           checkinTimer: null,
@@ -2081,10 +2096,18 @@ router.get("/checkin/:token", async (req, res) => {
 
     const userEmail = checkinTokens.get(token);
 
-    // Update activity time and reset both timers
+    // Update activity time and reset both timers.
+    // Declared outside the block: the post-check-in save below needs it, and a
+    // block-scoped declaration made that save throw ReferenceError on every
+    // check-in, leaving the old expires_at in the DB until the next periodic
+    // save (or forever, for recovered switches the periodic save skips).
+    let switchData = null;
     if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
+      switchData = activeDeadmanSwitches.get(userEmail);
       switchData.lastActivity = new Date();
+      // A successful check-in fully re-establishes the switch state, so a
+      // switch recovered after a restart can rejoin the periodic save loop.
+      switchData.recovered = false;
 
       // Update session activity in database if session token exists
       if (switchData.sessionToken) {
@@ -2258,20 +2281,22 @@ router.get("/checkin/:token", async (req, res) => {
     );
 
     // Save updated timer state to database for persistence
-    try {
-      await userService.saveTimerState(switchData.userId, {
-        nextCheckin: switchData.nextCheckin,
-        deadmanActivation: switchData.deadmanActivation,
-        lastActivity: switchData.lastActivity,
-      });
-      console.log(
-        `💾 PERSISTENCE: Timer state saved after check-in for ${userEmail}`,
-      );
-    } catch (error) {
-      console.error(
-        `❌ PERSISTENCE: Failed to save timer state after check-in for ${userEmail}:`,
-        error,
-      );
+    if (switchData) {
+      try {
+        await userService.saveTimerState(switchData.userId, {
+          nextCheckin: switchData.nextCheckin,
+          deadmanActivation: switchData.deadmanActivation,
+          lastActivity: switchData.lastActivity,
+        });
+        console.log(
+          `💾 PERSISTENCE: Timer state saved after check-in for ${userEmail}`,
+        );
+      } catch (error) {
+        console.error(
+          `❌ PERSISTENCE: Failed to save timer state after check-in for ${userEmail}:`,
+          error,
+        );
+      }
     }
 
     // Send success response

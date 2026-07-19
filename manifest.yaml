@@ -1,15 +1,19 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.38
+version: 1.0.39
 release-notes: |
-  - Fix: SECRET_KEY is now accepted in any encoding (base64 or hex) and derived
-    safely from anything else, instead of requiring base64. A hex key (what the
-    Start9 configurator and many manual setups produce) previously failed with
-    "SECRET_KEY must decode to 32 bytes" and silently skipped saving the
-    restart-recovery envelope.
-  - New: fresh local installs auto-generate and persist a SECRET_KEY on first
-    start — no manual key generation needed.
-  - New: the running version is printed at startup.
+  - Fix: timer state is now saved to the database immediately after a
+    check-in. A variable-scope bug made that save fail on every check-in
+    (ReferenceError), leaving the previous deadman deadline in the database
+    until the next periodic save — or indefinitely for switches restored
+    after a restart. A crash in that window could recover a stale deadline
+    and trigger the switch prematurely.
+  - Fix: switches restored after a restart rejoin the periodic state-save
+    loop after a successful check-in.
+  - Fix: database timestamps without a timezone marker are now parsed as UTC
+    during recovery. They were parsed as local time, so after a restart the
+    next check-in email was scheduled hours late (by the machine's UTC
+    offset) for users west of UTC, or too early for users east of it.
 license: GPL-3.0
 min-os-version: 0.3.5
 wrapper-repo: https://github.com/ericscalibur/Deploy-Deadman-Switch
