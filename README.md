@@ -28,7 +28,9 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 
 ### Installation
 
-1. **Clone the repository**
+1. **Get the code** — download the latest release tarball from the
+   [Releases page](https://github.com/ericscalibur/Deploy-Deadman-Switch/releases)
+   (recommended), or clone the repository:
    ```bash
    git clone https://github.com/ericscalibur/Deploy-Deadman-Switch.git
    cd Deploy-Deadman-Switch
@@ -39,48 +41,51 @@ A secure, web-based deadman switch service that automatically sends pre-configur
    npm install
    ```
 
-3. **Generate environment configuration**
-   ```bash
-   python3 generate_secret.py
-   ```
-   Follow the prompts to create a `.env` file with secure JWT keys.
-
-4. **Configure email settings**
-   Edit the `.env` file with your email credentials:
+3. **Configure email settings** — create a `.env` file containing:
    ```env
-   SECRET_KEY=your-generated-secret-key
    EMAIL_USER=your-email@gmail.com
    EMAIL_PASS=your-app-password
    APP_URL=http://localhost:3000
    PORT=3000
    ```
+   No `SECRET_KEY` is needed — one is generated automatically on first
+   start and saved into `.env` for you.
 
-5. **Start the server**
+4. **Start the server**
    ```bash
-   node server.js
+   npm start
    ```
+   The first line printed is the running version, followed by database
+   initialization.
 
-6. **Open the application**
+5. **Open the application**
    Navigate to `http://localhost:3000`
+
+**Windows users:** see [windows/WINDOWS_SETUP.md](windows/WINDOWS_SETUP.md)
+for a step-by-step guide, including how to run the switch invisibly in the
+background and start it automatically when the computer powers on.
 
 ## Configuration
 
 ### SECRET_KEY Setup
-The `SECRET_KEY` is used to sign JWT tokens for user authentication. It must be a secure, random string.
+The `SECRET_KEY` signs login tokens and encrypts the data the switch needs
+to recover and deliver after a server restart.
 
-**Important**: Never share or commit your `SECRET_KEY` to version control!
+**You normally don't need to do anything** — if no `SECRET_KEY` is set, the
+server generates one on first start and saves it into `.env`. To set one
+yourself instead, any of these work (base64, hex, or a passphrase are all
+accepted):
 
-1. **Generate automatically** (recommended):
-   ```bash
-   python3 generate_secret.py
-   ```
-   This creates a `.env` file with a cryptographically secure 64-character key.
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+or run `python3 generate_secret.py`, which also writes a `.env` template.
 
-2. **Generate manually** (alternative):
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   ```
-   Copy the output to your `.env` file as `SECRET_KEY=your-generated-key`
+**Important:**
+- Never share or commit your `SECRET_KEY` to version control.
+- **Never change the key while a switch is armed** — timers and the
+  restart-recovery data are encrypted with it, and a changed key makes them
+  unrecoverable until you log in and re-arm.
 
 ### Email Setup (Gmail)
 1. Enable 2-factor authentication on your Google account
@@ -102,9 +107,9 @@ SMTP_PASS=your-smtp-password
 ## API Endpoints
 
 ### Authentication
-- `POST /auth/signup` - Create new user account
-- `POST /auth/login` - User login
-- `POST /auth/forgot-password` - Password reset (planned)
+- `POST /deadman/signup` - Create new user account
+- `POST /deadman/login` - User login
+- `POST /deadman/logout` - User logout
 
 ### Deadman Switch
 - `POST /deadman/emails` - Configure recipient emails
@@ -115,7 +120,7 @@ SMTP_PASS=your-smtp-password
 - `GET /deadman/checkin/:token` - Process check-in from email link
 
 ### Admin/Debug
-- `GET /deadman/debug/status` - System status
+- `GET /deadman/debug/status` - System status (requires login)
 
 ## Project Structure
 
@@ -123,22 +128,21 @@ SMTP_PASS=your-smtp-password
 Deploy/
 ├── server.js                 # Main server application
 ├── package.json              # Dependencies and scripts
-├── generate_secret.py        # Environment setup utility
+├── generate_secret.py        # Optional .env template generator
 ├── .env                      # Environment configuration (excluded from git)
-├── .gitignore               # Git ignore rules
-├── models/
-│   └── user.js              # User data management
 ├── routes/
-│   ├── auth.js              # Authentication routes
-│   └── deadman-minimal.js   # Core deadman switch functionality
+│   └── deadman.js            # Auth + deadman switch routes
+├── database/
+│   ├── init.js               # SQLite schema creation and migrations
+│   ├── userService.js        # Encrypted database reads/writes
+│   └── crypto.js             # AES-256-GCM encryption utilities
 ├── utils/
-│   └── emailService.js      # Email sending service
-├── public/
-│   ├── index.html           # Main web interface
-│   ├── edit-email.html      # Email configuration page
-│   ├── script.js            # Frontend JavaScript
-│   └── styles.css           # Application styling
-└── data/                    # User data storage (auto-created)
+│   ├── emailService.js       # Email sending service
+│   └── timeUtils.js          # Interval conversion and validation
+├── public/                   # Web interface (HTML/JS/CSS, no build step)
+├── tests/                    # Unit tests (npm test)
+├── windows/                  # Windows launcher scripts + setup guide
+└── start9/                   # Start9 server packaging
 ```
 
 ## Security Features
