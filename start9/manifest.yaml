@@ -1,6 +1,6 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 1.0.40
+version: 2.0.0
 release-notes: |
   - Fix: the switch's database session is now closed ONLY after deadman
     emails are confirmed delivered. Previously delivery was fire-and-forget

@@ -11,6 +11,15 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 - 📱 **Real-time Dashboard** - Live countdown timers and status monitoring
 - 🧹 **Complete Data Lifecycle** - Automatic cleanup after activation
 - ⚙️ **Flexible Intervals** - Configurable check-in and deadman timer periods
+- 🔶 **Pre-Fire Warning** - Recipients get ~30 days' human-readable notice
+  (with acknowledgment link) after repeated missed check-ins, before the
+  switch fires
+- 📮 **Recipient Liveness Pings** - Annual one-click address verification for
+  every recipient; you are alerted while you're still around to fix a dead
+  address
+- ✉️ **Deliverability-Hardened Trigger** - Plain-word severity subjects (no
+  emoji), optional dedicated sender address for the trigger email, and a
+  self-contained recovery spec inside the trigger email itself
 
 ## How It Works
 
@@ -104,6 +113,50 @@ SMTP_PASS=your-smtp-password
 - **Check-in Intervals**: 1 minute to 2 weeks
 - **Deadman Timer**: 3 minutes to 9 months
 
+### Beneficiary Escalation (v2.0.0)
+
+If you keep missing check-ins, your recipients are warned by a human-readable
+email *before* the switch fires — the last false-positive filter in a system
+with no cancel path. Recipients also get a once-a-year address verification
+email so a dead recipient address is discovered while you can still fix it.
+
+All knobs are environment variables with sensible defaults:
+
+```env
+# Consecutive check-in intervals of silence before recipients are warned.
+# Default 5 (with 2-week check-ins and a 3-month timer, the warning lands
+# roughly 30 days before the switch fires).
+WARNING_MISSED_CHECKINS=5
+
+# Annual recipient address verification cadence and ack grace window.
+PING_INTERVAL_DAYS=365
+PING_ACK_GRACE_DAYS=30
+```
+
+The warning is a notification only — it contains no payload and no secrets.
+It carries an acknowledgment link; while unacknowledged it is re-sent every
+check-in interval, and stops once acknowledged. If you check in after a
+warning went out, recipients automatically get an "all clear".
+
+### Dedicated Trigger Sender (optional, recommended)
+
+Routine mail and the trigger email can come from different addresses, so
+recipients can never habituate to (or filter) the sender that matters.
+Configure a second account that has never sent anything else:
+
+```env
+TRIGGER_EMAIL_USER=trigger-account@gmail.com
+TRIGGER_EMAIL_PASS=its-app-password
+# or, custom SMTP:
+TRIGGER_SMTP_HOST=smtp.other-provider.com
+TRIGGER_SMTP_PORT=587
+TRIGGER_SMTP_USER=...
+TRIGGER_SMTP_PASS=...
+```
+
+If unset (or failing at fire time), the trigger falls back to the primary
+sender — delivery always wins over sender hygiene.
+
 ## API Endpoints
 
 ### Authentication
@@ -116,8 +169,11 @@ SMTP_PASS=your-smtp-password
 - `GET /deadman/emails` - Retrieve configured emails
 - `POST /deadman/activate` - Activate deadman switch
 - `POST /deadman/deactivate` - Deactivate deadman switch
-- `GET /deadman/timer-status` - Get current timer status
+- `GET /deadman/timer-status` - Get current timer status (includes missed
+  check-in count and warning state)
 - `GET /deadman/checkin/:token` - Process check-in from email link
+- `GET /deadman/ack/:token` - Recipient acknowledgment (pre-fire warning and
+  annual address verification)
 
 ### Admin/Debug
 - `GET /deadman/debug/status` - System status (requires login)

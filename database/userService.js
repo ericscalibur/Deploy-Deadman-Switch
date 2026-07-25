@@ -507,6 +507,165 @@ class UserService {
     });
   }
 
+  // ---- Pre-fire warning escalation state (Issue #1/#2) ----
+
+  // Persist the consecutive-missed-check-in counter so escalation state
+  // survives a server restart.
+  async setMissedCheckins(sessionToken, count) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        "UPDATE deadman_sessions SET missed_checkins = ? WHERE session_token = ? AND is_active = 1",
+        [count, sessionToken],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.changes > 0);
+        },
+      );
+    });
+  }
+
+  // Record that the beneficiary pre-fire warning went out. warning_sent_at
+  // keeps the FIRST send time across resends (escalation resends reuse the
+  // same ack token).
+  async setWarningSent(sessionToken, ackToken) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `UPDATE deadman_sessions
+                 SET warning_ack_token = ?,
+                     warning_sent_at = COALESCE(warning_sent_at, CURRENT_TIMESTAMP)
+                 WHERE session_token = ? AND is_active = 1`,
+        [ackToken, sessionToken],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.changes > 0);
+        },
+      );
+    });
+  }
+
+  // Operator checked in after a warning went out: reset the whole
+  // escalation state so a future lapse starts a fresh cycle.
+  async clearWarningState(sessionToken) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `UPDATE deadman_sessions
+                 SET missed_checkins = 0,
+                     warning_sent_at = NULL,
+                     warning_ack_at = NULL,
+                     warning_ack_token = NULL
+                 WHERE session_token = ?`,
+        [sessionToken],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.changes > 0);
+        },
+      );
+    });
+  }
+
+  // Beneficiary clicked the warning acknowledgment link. Returns the session
+  // row (with operator email) or null if the token is unknown.
+  async ackWarningByToken(ackToken) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        `SELECT ds.*, u.email
+                 FROM deadman_sessions ds
+                 JOIN users u ON ds.user_id = u.id
+                 WHERE ds.warning_ack_token = ? AND ds.is_active = 1`,
+        [ackToken],
+        (err, session) => {
+          if (err) return reject(err);
+          if (!session) return resolve(null);
+          this.db.run(
+            "UPDATE deadman_sessions SET warning_ack_at = COALESCE(warning_ack_at, CURRENT_TIMESTAMP) WHERE id = ?",
+            [session.id],
+            (updateErr) => {
+              if (updateErr) reject(updateErr);
+              else resolve(session);
+            },
+          );
+        },
+      );
+    });
+  }
+
+  // ---- Beneficiary channel liveness pings (Issue #2) ----
+  // Addresses are keyed by SHA-256 hash only; plaintext never lands here.
+
+  async getBeneficiaryPing(userId, emailHash) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT * FROM beneficiary_pings WHERE user_id = ? AND email_hash = ?",
+        [userId, emailHash],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row || null);
+        },
+      );
+    });
+  }
+
+  // Start a new ping cycle for this beneficiary (fresh token, ack cleared).
+  async saveBeneficiaryPingSent(userId, emailHash, pingToken) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT INTO beneficiary_pings (user_id, email_hash, ping_token, ping_sent_at, ack_at, operator_alerted_at)
+                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, NULL, NULL)
+                 ON CONFLICT(user_id, email_hash) DO UPDATE SET
+                     ping_token = excluded.ping_token,
+                     ping_sent_at = CURRENT_TIMESTAMP,
+                     ack_at = NULL,
+                     operator_alerted_at = NULL`,
+        [userId, emailHash, pingToken],
+        function (err) {
+          if (err) reject(err);
+          else resolve(true);
+        },
+      );
+    });
+  }
+
+  // Beneficiary replied to the liveness ping. Returns the ping row (joined
+  // with the operator's email for the confirmation page) or null.
+  async ackBeneficiaryPingByToken(pingToken) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        `SELECT bp.*, u.email
+                 FROM beneficiary_pings bp
+                 JOIN users u ON bp.user_id = u.id
+                 WHERE bp.ping_token = ?`,
+        [pingToken],
+        (err, row) => {
+          if (err) return reject(err);
+          if (!row) return resolve(null);
+          this.db.run(
+            "UPDATE beneficiary_pings SET ack_at = COALESCE(ack_at, CURRENT_TIMESTAMP) WHERE id = ?",
+            [row.id],
+            (updateErr) => {
+              if (updateErr) reject(updateErr);
+              else resolve(row);
+            },
+          );
+        },
+      );
+    });
+  }
+
+  // Remember that the operator was already alerted about this unacked ping
+  // so the daily sweep doesn't re-alert every day.
+  async markPingOperatorAlerted(pingId) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        "UPDATE beneficiary_pings SET operator_alerted_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [pingId],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.changes > 0);
+        },
+      );
+    });
+  }
+
   // Log audit event
   async logAudit(userId, action, details, ipAddress, userAgent) {
     return new Promise((resolve, reject) => {

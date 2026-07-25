@@ -12,6 +12,32 @@ const {
   getIntervalName,
   getInactivityName,
 } = require("../utils/timeUtils");
+const {
+  warningAction,
+  pingAction,
+  DEFAULT_WARNING_MISSED_CHECKINS,
+  DEFAULT_PING_INTERVAL_DAYS,
+  DEFAULT_PING_ACK_GRACE_DAYS,
+} = require("../utils/escalation");
+
+// Beneficiary escalation configuration (Issues #1/#2). Defaults follow the
+// modification spec: warning after 5 consecutive check-in intervals of
+// operator silence; liveness pings annually with a 30-day ack grace window.
+const WARNING_MISSED_CHECKINS =
+  parseInt(process.env.WARNING_MISSED_CHECKINS, 10) ||
+  DEFAULT_WARNING_MISSED_CHECKINS;
+const PING_INTERVAL_MS =
+  (parseInt(process.env.PING_INTERVAL_DAYS, 10) ||
+    DEFAULT_PING_INTERVAL_DAYS) *
+  24 * 60 * 60 * 1000;
+const PING_ACK_GRACE_MS =
+  (parseInt(process.env.PING_ACK_GRACE_DAYS, 10) ||
+    DEFAULT_PING_ACK_GRACE_DAYS) *
+  24 * 60 * 60 * 1000;
+
+function appUrl() {
+  return process.env.APP_URL || "http://localhost:3000";
+}
 
 // Initialize database service
 const userService = new UserService();
@@ -170,6 +196,15 @@ async function recoverActiveDeadmanSwitches() {
           checkinTimer: null,
           deadmanTimer: null,
           recovered: true, // Flag to indicate this was recovered
+          // Escalation state survives restarts (Issue #1/#2)
+          missedCheckins: session.missed_checkins || 0,
+          warningSentAt: session.warning_sent_at
+            ? parseDbTimestamp(session.warning_sent_at)
+            : null,
+          warningAckAt: session.warning_ack_at
+            ? parseDbTimestamp(session.warning_ack_at)
+            : null,
+          warningAckToken: session.warning_ack_token || null,
         };
 
         // Make recovered recipients available to the deadman trigger handler.
@@ -211,8 +246,13 @@ async function recoverActiveDeadmanSwitches() {
               }
             }
 
+            const missedCount = await registerMissedCheckin(
+              session.email,
+              switchData,
+            );
+
             emailService
-              .sendCheckinEmail(session.email, checkinToken)
+              .sendCheckinEmail(session.email, checkinToken, missedCount)
               .then((emailSent) => {
                 if (!emailSent) {
                   console.error(
@@ -316,7 +356,7 @@ async function recoverActiveDeadmanSwitches() {
 // so it keeps retrying/alerting rather than failing silently.
 async function alertUnrecoverableSwitch(userEmail) {
   try {
-    const subject = "⚠️ Your Deadman Switch could not deliver — action needed";
+    const subject = "WARNING: Your Deadman Switch could not deliver — action needed";
     const html = `
       <h2>⚠️ Deadman Switch delivery problem</h2>
       <p>Your Deploy Deadman Switch reached its inactivity deadline, but the
@@ -336,6 +376,259 @@ async function alertUnrecoverableSwitch(userEmail) {
     );
   }
 }
+
+// ---- Beneficiary escalation (Issues #1/#2) ----
+
+function getRecipientsFor(userEmail, switchData) {
+  return (
+    userEmails.get(userEmail) ||
+    (switchData && switchData.settings && switchData.settings.emails) ||
+    []
+  );
+}
+
+// Beneficiary addresses are only ever persisted as SHA-256 hashes
+// (beneficiary_pings table) so liveness tracking doesn't weaken the
+// encrypted-at-rest guarantee.
+function hashEmail(address) {
+  return crypto
+    .createHash("sha256")
+    .update(String(address).trim().toLowerCase())
+    .digest("hex");
+}
+
+// Send (or, while unacknowledged, re-send) the pre-fire warning to every
+// configured recipient. Notification only — no ciphertext, no payload, no
+// instructions beyond "try to reach the operator and confirm receipt".
+async function sendPreFireWarning(userEmail, switchData) {
+  try {
+    const recipients = getRecipientsFor(userEmail, switchData);
+    if (recipients.length === 0) {
+      console.warn(
+        `⚠️ PRE-FIRE WARNING: No recipients available for ${userEmail} — cannot warn`,
+      );
+      return;
+    }
+
+    const isResend = !!switchData.warningSentAt;
+    if (!switchData.warningAckToken) {
+      switchData.warningAckToken = crypto.randomBytes(32).toString("hex");
+    }
+    const ackUrl = `${appUrl()}/deadman/ack/${switchData.warningAckToken}`;
+    const daysRemaining = Math.max(
+      0,
+      Math.round((switchData.deadmanActivation - Date.now()) / 86400000),
+    );
+
+    for (const recipient of recipients) {
+      const addr = recipient.to || recipient.address;
+      if (!addr) continue;
+      await emailService.sendBeneficiaryWarning(
+        addr,
+        userEmail,
+        daysRemaining,
+        ackUrl,
+        isResend,
+      );
+    }
+
+    switchData.warningSentAt = switchData.warningSentAt || new Date();
+    if (switchData.sessionToken) {
+      await userService.setWarningSent(
+        switchData.sessionToken,
+        switchData.warningAckToken,
+      );
+    }
+    console.log(
+      `🔶 PRE-FIRE WARNING: ${isResend ? "Re-sent" : "Sent"} to ${recipients.length} recipient(s) for ${userEmail} (~${daysRemaining} days to fire)`,
+    );
+  } catch (error) {
+    console.error(
+      `❌ PRE-FIRE WARNING: Failed to send for ${userEmail}:`,
+      error,
+    );
+  }
+}
+
+// Called on every periodic check-in tick, BEFORE the operator's check-in
+// email goes out. The tick itself proves one full interval elapsed with no
+// check-in, so the counter increments here; when it reaches the threshold
+// the beneficiaries are warned. Escalation is deliberately independent of
+// whether operator-side email delivery is succeeding (spec requirement).
+async function registerMissedCheckin(userEmail, switchData) {
+  switchData.missedCheckins = (switchData.missedCheckins || 0) + 1;
+
+  if (switchData.sessionToken) {
+    try {
+      await userService.setMissedCheckins(
+        switchData.sessionToken,
+        switchData.missedCheckins,
+      );
+    } catch (error) {
+      console.error(
+        `❌ ESCALATION: Failed to persist missed count for ${userEmail}:`,
+        error,
+      );
+    }
+  }
+
+  const action = warningAction({
+    missedCheckins: switchData.missedCheckins,
+    threshold: WARNING_MISSED_CHECKINS,
+    warningAckAt: switchData.warningAckAt,
+  });
+  if (action === "send") {
+    await sendPreFireWarning(userEmail, switchData);
+  }
+
+  return switchData.missedCheckins;
+}
+
+// Operator proved they're alive (check-in or manual re-arm): zero the
+// counter, clear warning state, and stand the beneficiaries down if a
+// warning had already gone out — never leave a human expecting a fire that
+// isn't coming.
+async function resetEscalationState(userEmail, switchData) {
+  const hadWarning = !!switchData.warningSentAt;
+
+  switchData.missedCheckins = 0;
+  switchData.warningSentAt = null;
+  switchData.warningAckAt = null;
+  switchData.warningAckToken = null;
+
+  if (switchData.sessionToken) {
+    try {
+      await userService.clearWarningState(switchData.sessionToken);
+    } catch (error) {
+      console.error(
+        `❌ ESCALATION: Failed to clear warning state for ${userEmail}:`,
+        error,
+      );
+    }
+  }
+
+  if (hadWarning) {
+    const recipients = getRecipientsFor(userEmail, switchData);
+    for (const recipient of recipients) {
+      const addr = recipient.to || recipient.address;
+      if (!addr) continue;
+      emailService
+        .sendBeneficiaryStandDown(addr, userEmail)
+        .catch((error) =>
+          console.error(
+            `❌ ESCALATION: Stand-down notice to ${addr} failed:`,
+            error,
+          ),
+        );
+    }
+    console.log(
+      `🔷 ESCALATION: ${userEmail} checked in after a warning — stand-down sent to ${recipients.length} recipient(s)`,
+    );
+  }
+}
+
+// Daily sweep for the annual beneficiary liveness ping (Issue #2). Uses the
+// SECRET_KEY-encrypted delivery envelope, so it works unattended for every
+// armed switch. If a ping goes unanswered past the grace window, the
+// OPERATOR is alerted — while they are still around to fix the address.
+async function runBeneficiaryPingSweep() {
+  try {
+    const sessions = await userService.getAllRecoverableSessions();
+    for (const session of sessions) {
+      if (!session.server_encrypted_emails) continue;
+
+      let recipients;
+      try {
+        recipients = cryptoUtils.decryptEmailsWithServerKey(
+          session.server_encrypted_emails,
+        );
+      } catch (error) {
+        console.error(
+          `❌ PING SWEEP: Cannot decrypt envelope for ${session.email}:`,
+          error.message,
+        );
+        continue;
+      }
+
+      const seen = new Set();
+      for (const recipient of recipients) {
+        const addr = recipient.to || recipient.address;
+        if (!addr) continue;
+        const emailHash = hashEmail(addr);
+        if (seen.has(emailHash)) continue;
+        seen.add(emailHash);
+
+        const ping = await userService.getBeneficiaryPing(
+          session.user_id,
+          emailHash,
+        );
+        const action = pingAction({
+          now: Date.now(),
+          pingSentAt:
+            ping && ping.ping_sent_at
+              ? parseDbTimestamp(ping.ping_sent_at).getTime()
+              : null,
+          ackAt:
+            ping && ping.ack_at ? parseDbTimestamp(ping.ack_at).getTime() : null,
+          operatorAlertedAt:
+            ping && ping.operator_alerted_at
+              ? parseDbTimestamp(ping.operator_alerted_at).getTime()
+              : null,
+          intervalMs: PING_INTERVAL_MS,
+          graceMs: PING_ACK_GRACE_MS,
+        });
+
+        if (action === "send") {
+          const pingToken = crypto.randomBytes(32).toString("hex");
+          const ackUrl = `${appUrl()}/deadman/ack/${pingToken}`;
+          const sent = await emailService.sendBeneficiaryPing(
+            addr,
+            session.email,
+            ackUrl,
+          );
+          if (sent) {
+            await userService.saveBeneficiaryPingSent(
+              session.user_id,
+              emailHash,
+              pingToken,
+            );
+            console.log(
+              `📮 PING SWEEP: Liveness ping sent for ${session.email}'s recipient`,
+            );
+          }
+        } else if (action === "alert-operator") {
+          const graceDays = Math.round(PING_ACK_GRACE_MS / 86400000);
+          const alerted = await emailService.sendAlertEmail(
+            session.email,
+            "WARNING: a recipient address may be dead — action needed",
+            `<h2>Recipient address unresponsive</h2>
+             <p>One of your configured recipients has not confirmed the annual
+             address check sent more than ${graceDays} days ago. If that address
+             is no longer in use, your deadman switch could one day fire into a
+             void — the exact failure this check exists to catch early.</p>
+             <p><strong>Log in to Deploy, review your recipient list, and ask your
+             recipients which of them did not get a verification email.</strong>
+             (For privacy this alert does not name the address.)</p>`,
+          );
+          if (alerted) {
+            await userService.markPingOperatorAlerted(ping.id);
+            console.log(
+              `🔶 PING SWEEP: Operator ${session.email} alerted about unresponsive recipient`,
+            );
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ PING SWEEP: Sweep failed:", error);
+  }
+}
+
+// First sweep shortly after startup (after recovery re-arms switches), then
+// daily. New installs therefore verify every beneficiary address immediately
+// on arming rather than a year later.
+setTimeout(runBeneficiaryPingSweep, 30000);
+setInterval(runBeneficiaryPingSweep, 24 * 60 * 60 * 1000);
 
 // Deliver the deadman emails, closing the DB session ONLY on success (at
 // least one recipient reached). On total failure — e.g. the network is not
@@ -380,7 +673,7 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
     try {
       await emailService.sendAlertEmail(
         userEmail,
-        "⚠️ Your Deadman Switch fired but delivery failed — retrying",
+        "WARNING: Your Deadman Switch fired but delivery failed — retrying",
         `<h2>⚠️ Deadman Switch delivery problem</h2>
          <p>Your switch reached its inactivity deadline and tried to send your
          messages, but no emails could be delivered (SMTP failure). The server
@@ -877,6 +1170,9 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
         lastActivity: switchData.lastActivity,
         nextCheckin: switchData.nextCheckin,
         deadmanActivation: switchData.deadmanActivation,
+        missedCheckins: switchData.missedCheckins || 0,
+        warningSent: !!switchData.warningSentAt,
+        warningAcknowledged: !!switchData.warningAckAt,
         settings: {
           checkinInterval: switchData.settings.checkinInterval,
           inactivityPeriod: switchData.settings.inactivityPeriod,
@@ -1118,8 +1414,10 @@ router.post("/activate", authenticateToken, async (req, res) => {
         console.log(`📧 DEBUG: Check-in token: ${checkinToken}`);
         console.log(`📧 DEBUG: emailService available: ${!!emailService}`);
 
+        const missedCount = await registerMissedCheckin(userEmail, switchData);
+
         emailService
-          .sendCheckinEmail(userEmail, checkinToken)
+          .sendCheckinEmail(userEmail, checkinToken, missedCount)
           .then((emailSent) => {
             if (!emailSent) {
               console.error(
@@ -1759,6 +2057,20 @@ router.post("/recover", authenticateToken, async (req, res) => {
       deadmanTimer: null,
     };
 
+    // Load persisted escalation state so a warning sent before a restart is
+    // properly stood down by the resetEscalationState() call below.
+    try {
+      const dbSession = await userService.getActiveSession(userId);
+      if (dbSession && dbSession.warning_sent_at) {
+        switchData.warningSentAt = parseDbTimestamp(dbSession.warning_sent_at);
+      }
+    } catch (error) {
+      console.error(
+        `❌ RECOVERY: Could not load escalation state for ${userEmail}:`,
+        error,
+      );
+    }
+
     // Recreate check-in timer
     switchData.checkinTimer = setInterval(async () => {
       try {
@@ -1788,8 +2100,10 @@ router.post("/recover", authenticateToken, async (req, res) => {
           }
         }
 
+        const missedCount = await registerMissedCheckin(userEmail, switchData);
+
         emailService
-          .sendCheckinEmail(userEmail, checkinToken)
+          .sendCheckinEmail(userEmail, checkinToken, missedCount)
           .then((emailSent) => {
             if (!emailSent) {
               console.error(
@@ -1845,6 +2159,10 @@ router.post("/recover", authenticateToken, async (req, res) => {
     // Store the recovered switch
     activeDeadmanSwitches.set(userEmail, switchData);
     userEmails.set(userEmail, emails);
+
+    // Manual recovery is an authenticated operator action — proof of life.
+    // Reset escalation so any in-flight warning cycle is stood down.
+    await resetEscalationState(userEmail, switchData);
 
     // Refresh the server-recoverable envelope so a later restart can still fire.
     if (switchData.sessionToken) {
@@ -2098,6 +2416,10 @@ router.get("/checkin/:token", async (req, res) => {
       // switch recovered after a restart can rejoin the periodic save loop.
       switchData.recovered = false;
 
+      // Proof of life: reset the missed-check-in escalation, and stand the
+      // beneficiaries down if a pre-fire warning had already gone out.
+      await resetEscalationState(userEmail, switchData);
+
       // Update session activity in database if session token exists
       if (switchData.sessionToken) {
         try {
@@ -2192,8 +2514,13 @@ router.get("/checkin/:token", async (req, res) => {
 
           console.log(`📧 PERIODIC CHECK-IN: Sending email to ${userEmail}`);
 
+          const missedCount = await registerMissedCheckin(
+            userEmail,
+            switchData,
+          );
+
           emailService
-            .sendCheckinEmail(userEmail, checkinToken)
+            .sendCheckinEmail(userEmail, checkinToken, missedCount)
             .then((emailSent) => {
               if (!emailSent) {
                 console.error(
@@ -2312,6 +2639,84 @@ router.get("/checkin/:token", async (req, res) => {
         </body>
       </html>
     `);
+  }
+});
+
+// Beneficiary acknowledgment endpoint (Issue #2) — no auth, like /checkin.
+// One URL shape serves both token kinds: pre-fire warning acks and annual
+// liveness-ping acks. Acking proves the delivery path is alive end to end;
+// it neither triggers nor suppresses anything.
+router.get("/ack/:token", async (req, res) => {
+  const page = (title, body) => `
+      <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+          <h2>${title}</h2>
+          ${body}
+          <hr>
+          <p><small>You can close this window now.</small></p>
+        </body>
+      </html>
+    `;
+  try {
+    const { token } = req.params;
+
+    // Pre-fire warning ack?
+    const session = await userService.ackWarningByToken(token);
+    if (session) {
+      const switchData = activeDeadmanSwitches.get(session.email);
+      if (switchData && switchData.warningAckToken === token) {
+        switchData.warningAckAt = new Date();
+      }
+      console.log(
+        `🔷 ACK: Pre-fire warning acknowledged for ${session.email}`,
+      );
+      return res.send(
+        page(
+          "Warning received — thank you",
+          `<p>Your receipt of the warning has been recorded.</p>
+           <p><strong>Please keep trying to reach ${session.email}</strong> by phone,
+           through family or friends, or in person. If you reach them, tell them to
+           check in with their Deploy system immediately.</p>
+           <p>If they do not check in, their prepared message will be sent to you
+           automatically — you will not need to do anything to receive it.</p>`,
+        ),
+      );
+    }
+
+    // Annual liveness-ping ack?
+    const ping = await userService.ackBeneficiaryPingByToken(token);
+    if (ping) {
+      console.log(
+        `🔷 ACK: Annual liveness ping acknowledged for ${ping.email}`,
+      );
+      return res.send(
+        page(
+          "Address confirmed — thank you",
+          `<p>You've confirmed this email address still works. Nothing else is
+           needed, and nothing has been sent or triggered.</p>
+           <p>Expect the next verification in about a year.</p>`,
+        ),
+      );
+    }
+
+    res
+      .status(400)
+      .send(
+        page(
+          "Invalid confirmation link",
+          "<p>This confirmation link is invalid or was superseded by a newer one. Please use the link from the most recent email.</p>",
+        ),
+      );
+  } catch (error) {
+    console.error("Error processing acknowledgment:", error);
+    res
+      .status(500)
+      .send(
+        page(
+          "Error",
+          "<p>An error occurred while recording your confirmation. Please try the link again.</p>",
+        ),
+      );
   }
 });
 

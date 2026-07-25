@@ -47,7 +47,9 @@ database/
   crypto.js                # AES-256-GCM encryption, PBKDF2 key derivation, token generation
 utils/
   timeUtils.js             # Pure functions: ms↔interval conversion and validation
-  emailService.js          # Nodemailer wrapper; Gmail SMTP or custom SMTP
+  emailService.js          # Nodemailer wrapper; Gmail SMTP or custom SMTP; optional dedicated trigger sender
+  escalation.js            # Pure decision logic: pre-fire warning + annual liveness ping timing
+  recoverySpec.js          # Plain-language Legacy v1/v2 crypto spec embedded in trigger emails
 public/                    # Vanilla JS/HTML/CSS frontend (no build step)
 tests/
   timeUtils.test.js        # Unit tests for time utilities
@@ -61,7 +63,9 @@ start9/                    # Packaging scripts for Start9 OS deployment
 - **Timer recovery on restart**: `deadman.js` queries the DB on startup and re-arms any active switches, recalculating remaining time from stored timestamps.
 - **Large timeout handling**: JavaScript's `setTimeout` overflows at ~24.8 days. The code uses `setInterval`-based polling for timeouts beyond that threshold.
 - **Single-use check-in tokens**: Each check-in email contains a unique token. Clicking it resets the timer and invalidates the token.
-- **Auth tokens**: JWTs expire in 24h and are stored in HTTP-only cookies. All `/deadman/*` routes except signup/login/checkin require a valid JWT cookie.
+- **Auth tokens**: JWTs expire in 24h and are stored in HTTP-only cookies. All `/deadman/*` routes except signup/login/checkin/ack require a valid JWT cookie.
+- **Beneficiary escalation (v2.0.0)**: after `WARNING_MISSED_CHECKINS` consecutive check-in intervals of operator silence (default 5), recipients get a pre-fire warning with an ack link (`/deadman/ack/:token`); unacknowledged warnings re-send each interval. A daily sweep sends annual liveness pings to recipients (addresses stored only as SHA-256 hashes in `beneficiary_pings`) and alerts the operator when a ping goes unanswered past the grace window. Escalation state lives in `deadman_sessions` columns and survives restarts.
+- **Trigger email is self-contained**: it embeds recovery instructions and a plain-language spec of the Legacy encryption format (`utils/recoverySpec.js`) so recovery never depends on a live repo or a working copy of the tool. It sends from a dedicated sender when `TRIGGER_EMAIL_*`/`TRIGGER_SMTP_*` are configured, with the subject prefixed `CRITICAL:` — subjects use plain severity words, never emoji.
 
 ### Email Flow
 

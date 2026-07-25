@@ -113,6 +113,14 @@ function applyConfigToEnv(config) {
     smtp_user: "SMTP_USER",
     smtp_password: "SMTP_PASS",
     app_url: "APP_URL",
+    // v2.0.0 — dedicated trigger sender + escalation tuning
+    trigger_email_user: "TRIGGER_EMAIL_USER",
+    trigger_email_password: "TRIGGER_EMAIL_PASS",
+    trigger_smtp_host: "TRIGGER_SMTP_HOST",
+    trigger_smtp_port: "TRIGGER_SMTP_PORT",
+    trigger_smtp_user: "TRIGGER_SMTP_USER",
+    trigger_smtp_password: "TRIGGER_SMTP_PASS",
+    warning_missed_checkins: "WARNING_MISSED_CHECKINS",
   };
   for (const [cfgKey, envKey] of Object.entries(map)) {
     const val = config[cfgKey];

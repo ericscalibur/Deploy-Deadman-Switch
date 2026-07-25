@@ -78,6 +78,25 @@ function initializeDatabase() {
             );
         `;
 
+        // Beneficiary channel liveness (annual ping / pre-fire warning acks).
+        // Beneficiary addresses are stored ONLY as SHA-256 hashes so this table
+        // never holds plaintext recipient data at rest — the plaintext address
+        // lives in the encrypted envelopes like everything else.
+        const createBeneficiaryPingsTable = `
+            CREATE TABLE IF NOT EXISTS beneficiary_pings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                email_hash TEXT NOT NULL,
+                ping_token TEXT UNIQUE,
+                ping_sent_at DATETIME,
+                ack_at DATETIME,
+                operator_alerted_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, email_hash),
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            );
+        `;
+
         // Key-value store for service-level config (set via Start9 Config UI)
         const createSettingsTable = `
             CREATE TABLE IF NOT EXISTS settings (
@@ -157,25 +176,44 @@ function initializeDatabase() {
                 console.log('Settings table created or already exists');
             });
 
+            db.run(createBeneficiaryPingsTable, (err) => {
+                if (err) {
+                    console.error('Error creating beneficiary pings table:', err.message);
+                    reject(err);
+                    return;
+                }
+                console.log('Beneficiary pings table created or already exists');
+            });
+
             // Migration: add server_encrypted_emails to existing deadman_sessions
             // tables (CREATE TABLE IF NOT EXISTS won't add columns to older DBs).
             // Issued as a single serialized statement so it completes before
             // db.close() below; a "duplicate column" error just means it already
             // exists and is safely ignored (keeps this idempotent).
-            db.run(
+            const sessionColumnMigrations = [
                 'ALTER TABLE deadman_sessions ADD COLUMN server_encrypted_emails TEXT;',
-                (alterErr) => {
+                // Pre-fire warning state (v2.0.0): consecutive check-in intervals
+                // with no operator response, plus the beneficiary warning
+                // sent/ack bookkeeping — persisted so escalation survives restarts.
+                'ALTER TABLE deadman_sessions ADD COLUMN missed_checkins INTEGER DEFAULT 0;',
+                'ALTER TABLE deadman_sessions ADD COLUMN warning_sent_at DATETIME;',
+                'ALTER TABLE deadman_sessions ADD COLUMN warning_ack_at DATETIME;',
+                'ALTER TABLE deadman_sessions ADD COLUMN warning_ack_token TEXT;',
+            ];
+            sessionColumnMigrations.forEach((sql) => {
+                const column = sql.match(/ADD COLUMN (\w+)/)[1];
+                db.run(sql, (alterErr) => {
                     if (alterErr) {
                         if (/duplicate column name/i.test(alterErr.message)) {
-                            console.log('Migration: server_encrypted_emails column already exists');
+                            console.log(`Migration: ${column} column already exists`);
                         } else {
-                            console.error('Error adding server_encrypted_emails column:', alterErr.message);
+                            console.error(`Error adding ${column} column:`, alterErr.message);
                         }
                     } else {
-                        console.log('Migrated: added server_encrypted_emails column to deadman_sessions');
+                        console.log(`Migrated: added ${column} column to deadman_sessions`);
                     }
-                },
-            );
+                });
+            });
 
             // Create indexes
             createIndexes.forEach((indexSQL, i) => {
