@@ -246,6 +246,15 @@ async function recoverActiveDeadmanSwitches() {
               }
             }
 
+            // Deadline passed → the fire path owns this switch now (see the
+            // matching guard in /activate's timer).
+            if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
+              console.log(
+                `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${session.email}, skipping check-in email`,
+              );
+              return;
+            }
+
             const missedCount = await registerMissedCheckin(
               session.email,
               switchData,
@@ -973,6 +982,18 @@ router.post("/emails", authenticateToken, async (req, res) => {
         .json({ message: "Password required for encryption" });
     }
 
+    // Refuse to store a recipient with no deliverable address — a switch
+    // armed with an addressless email "fires" to nobody, and the failure
+    // only surfaces at trigger time, when no one is left to notice.
+    if (
+      !emailAddress ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(emailAddress))
+    ) {
+      return res
+        .status(400)
+        .json({ message: "A valid recipient email address is required" });
+    }
+
     // Get user's salt and current encrypted data
     const user = await userService.getUserById(userId);
     const currentData = await userService.getUserData(
@@ -1231,6 +1252,16 @@ router.post("/activate", authenticateToken, async (req, res) => {
     const userData = await userService.getUserData(userId, password, user.salt);
     const emails = userData.emails || [];
 
+    // Refuse to arm a switch with no deliverable recipient — same rationale
+    // as the SMTP check above: a switch that fires to nobody is worse than
+    // one that refuses to arm.
+    if (!emails.some((e) => e.to || e.address)) {
+      return res.status(400).json({
+        message:
+          "No recipient emails configured — add at least one beneficiary email before activating. The switch was NOT activated.",
+      });
+    }
+
     // Validate check-in interval
     const checkinValidation = validateTimeInterval(checkinInterval, false);
     if (!checkinValidation.isValid) {
@@ -1403,6 +1434,16 @@ router.post("/activate", authenticateToken, async (req, res) => {
               error,
             );
           }
+        }
+
+        // The deadman deadline has passed: the switch is firing (or already
+        // fired and is tearing down). A check-in email sent now is a dead
+        // link into a closed switch — skip it and let the fire path finish.
+        if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
+          console.log(
+            `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
+          );
+          return;
         }
 
         console.log(`📧 PERIODIC CHECK-IN: Sending email to ${userEmail}`);
@@ -2100,6 +2141,15 @@ router.post("/recover", authenticateToken, async (req, res) => {
           }
         }
 
+        // Deadline passed → the fire path owns this switch now (see the
+        // matching guard in /activate's timer).
+        if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
+          console.log(
+            `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
+          );
+          return;
+        }
+
         const missedCount = await registerMissedCheckin(userEmail, switchData);
 
         emailService
@@ -2510,6 +2560,15 @@ router.get("/checkin/:token", async (req, res) => {
                 error,
               );
             }
+          }
+
+          // Deadline passed → the fire path owns this switch now (see the
+          // matching guard in /activate's timer).
+          if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
+            console.log(
+              `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
+            );
+            return;
           }
 
           console.log(`📧 PERIODIC CHECK-IN: Sending email to ${userEmail}`);

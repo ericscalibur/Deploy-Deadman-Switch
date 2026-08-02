@@ -1,103 +1,67 @@
 #!/bin/bash
 
-set -ea
+set -e
 
-# Properties script for Start9 - provides service information and status
+# Properties for the Start9 dashboard.
+#
+# Output MUST be `{"version": 2, "data": {...}}` where every entry is a typed
+# object ({type: "string", value: ...}) — StartOS 0.4 validates this shape
+# strictly (0.3.x used the same format; the old flat-JSON output of this
+# script never matched it). Reads state from the `main` volume, which must be
+# declared as a mount on the properties procedure in manifest.yaml.
 
-# Get service status and properties
-main() {
-    local config_file="/app/data/config.yaml"
-    local env_file="/app/data/.env"
-    local port="${PORT:-3000}"
+ENV_FILE="/app/data/.env"
 
-    # Check if service is configured
-    local configured="false"
-    if [ -f "$env_file" ] && grep -q "EMAIL_USER\|SMTP_HOST" "$env_file"; then
-        configured="true"
-    fi
+exec node - << 'EOF'
+const fs = require("fs");
 
-    # Check if service is running
-    local running="false"
-    if pgrep -f "node server.js" > /dev/null 2>&1; then
-        running="true"
-    fi
-
-    # Get email provider if configured
-    local email_provider="not configured"
-    if [ -f "$env_file" ]; then
-        if grep -q "EMAIL_USER=" "$env_file"; then
-            email_provider="Gmail"
-        elif grep -q "SMTP_HOST=" "$env_file"; then
-            email_provider="Custom SMTP"
-        fi
-    fi
-
-    # Get current version
-    local version="1.0.0"
-    if [ -f "/app/package.json" ]; then
-        version=$(node -e "console.log(require('/app/package.json').version || '1.0.0')" 2>/dev/null || echo "1.0.0")
-    fi
-
-    # Calculate data directory size
-    local data_size="0"
-    if [ -d "/app/data" ]; then
-        data_size=$(du -sh /app/data 2>/dev/null | cut -f1 || echo "0")
-    fi
-
-    # Count active users (if database exists)
-    local user_count="0"
-    if [ -f "/app/database/deadman_switch.db" ]; then
-        user_count=$(sqlite3 /app/database/deadman_switch.db "SELECT COUNT(*) FROM users;" 2>/dev/null || echo "0")
-    fi
-
-    # Debug: check if config file was written by configurator
-    local config_exists="false"
-    local config_contents="none"
-    if [ -f "$config_file" ]; then
-        config_exists="true"
-        config_contents=$(cat "$config_file" | tr '\n' '|' | head -c 200)
-    fi
-
-    # Output properties as JSON
-    cat << EOF
-{
-    "version": "$version",
-    "configured": $configured,
-    "config_file_exists": $config_exists,
-    "config_file_contents": "$config_contents",
-    "running": $running,
-    "email_provider": "$email_provider",
-    "port": $port,
-    "data_size": "$data_size",
-    "user_count": "$user_count",
-    "service_url": "https://$(hostname).local",
-    "features": [
-        "JWT Authentication",
-        "Encrypted Data Storage",
-        "Email Notifications",
-        "Configurable Timers",
-        "One-click Check-ins",
-        "Real-time Dashboard"
-    ],
-    "configuration_items": [
-        {
-            "name": "Email Provider",
-            "description": "Configure Gmail or custom SMTP for notifications",
-            "configured": $configured
-        },
-        {
-            "name": "Security",
-            "description": "JWT tokens and encrypted user data",
-            "configured": true
-        }
-    ],
-    "stats": {
-        "uptime": "$(uptime -p 2>/dev/null || echo 'unknown')",
-        "memory_usage": "$(free -h 2>/dev/null | awk '/^Mem:/ {print $3}' || echo 'unknown')",
-        "disk_usage": "$data_size"
+function readEnv(path) {
+  const env = {};
+  try {
+    for (const line of fs.readFileSync(path, "utf8").split("\n")) {
+      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (m) env[m[1]] = m[2];
     }
-}
-EOF
+  } catch (e) { /* not configured yet */ }
+  return env;
 }
 
-main "$@"
+const env = readEnv("/app/data/.env");
+
+let version = "unknown";
+try { version = require("/app/package.json").version; } catch (e) {}
+
+const provider = env.EMAIL_PROVIDER || null;
+const configured = !!(env.EMAIL_USER || env.SMTP_HOST);
+const appUrl = env.APP_URL || null;
+
+const str = (value, description, extra = {}) => ({
+  type: "string",
+  value: String(value),
+  description,
+  copyable: false,
+  qr: false,
+  masked: false,
+  ...extra,
+});
+
+const data = {
+  "Version": str(version, "Deploy Deadman Switch version"),
+  "Status": str(
+    configured ? "Configured" : "Not configured — set email credentials in Config",
+    "Whether an email transport has been configured",
+  ),
+};
+
+if (provider) {
+  data["Email Provider"] = str(provider, "SMTP transport used for check-in and deadman emails");
+}
+if (appUrl) {
+  data["Service URL"] = str(appUrl, "Base URL used in check-in email links", {
+    copyable: true,
+    qr: true,
+  });
+}
+
+process.stdout.write(JSON.stringify({ version: 2, data }));
+EOF

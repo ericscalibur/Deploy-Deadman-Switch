@@ -1,7 +1,26 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.0.7
+version: 2.0.8
 release-notes: |
+  - Fix: Backup actually backs up data now. The backup procedures declared
+    no volume mounts, so backup.sh copied empty directories to an unmounted
+    target and reported success while saving nothing — and Restore
+    "succeeded" the same way. Both now mount the data volume and the backup
+    target, and back up /app/data (database, .env including SECRET_KEY,
+    config). SECRET_KEY is included deliberately: StartOS encrypts backups,
+    and a restore without it could not decrypt the server-side delivery
+    envelope, leaving a restored switch unable to fire.
+  - Fix: Properties failed StartOS 0.4's schema validation (and returned
+    stale placeholder data on 0.3.x). Now reports Version, Status, Email
+    Provider and Service URL in the required typed format.
+  - Fix: a check-in email could be sent milliseconds after the deadman
+    deadline had already fired (visible at short test intervals as a
+    "check in now" email for a switch that was already closed). Check-in
+    timers now stand down once the deadline has passed.
+  - Fix: saving a recipient email without a valid address is now rejected,
+    and activation refuses to arm a switch with no deliverable recipient.
+    Previously a malformed save request could arm a switch that would
+    "fire" to nobody, with the failure surfacing only at trigger time.
   - Fix: uploading a QR photo only ever attempted one decode. The decoder is
     written to try two resolutions, but the pure-JS image path handed it the
     same pixel buffer twice, so every attempt ran at native resolution. It
@@ -120,6 +139,8 @@ properties:
   entrypoint: properties.sh
   args: []
   io-format: json
+  mounts:
+    main: /app/data
 
 volumes:
   main:
@@ -149,19 +170,28 @@ interfaces:
 
 dependencies: {}
 
+# BACKUP is the magic backup-target volume; StartOS supplies it to backup
+# procedures. Without these mounts backup.sh runs against empty directories
+# and reports success while saving nothing.
 backup:
   create:
     type: docker
     image: main
     entrypoint: backup.sh
     args: ["create"]
-    io-format: yaml
+    io-format: json
+    mounts:
+      BACKUP: /mnt/backup
+      main: /app/data
   restore:
     type: docker
     image: main
     entrypoint: backup.sh
     args: ["restore"]
-    io-format: yaml
+    io-format: json
+    mounts:
+      BACKUP: /mnt/backup
+      main: /app/data
 
 migrations:
   from: {}
