@@ -1,7 +1,46 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.0.0
+version: 2.0.7
 release-notes: |
+  - Fix: uploading a QR photo only ever attempted one decode. The decoder is
+    written to try two resolutions, but the pure-JS image path handed it the
+    same pixel buffer twice, so every attempt ran at native resolution. It
+    now builds seven variants — 0.35x/0.5x/0.75x/native/2x plus a centre crop
+    — and runs both ZXing and jsQR over each. Downscaling is box-averaged,
+    which suppresses the moiré from photographing a screen and is usually
+    what rescues a photo that fails at full resolution.
+  - Fix: removed the unused `certificate` volume. The container has always
+    served plain HTTP behind StartOS's TLS termination and never read
+    /mnt/cert, but declaring the volume made StartOS 0.4 request a
+    certificate covering every address bound to the interface — including
+    the public IPv4, which it rejects as an unknown hostname. The failed
+    request left the interface with no certificate, so HTTPS connections
+    were closed during the TLS handshake.
+  - Fix: saving config failed validation on StartOS 0.4 because its result
+    schema requires a `signal` field (the dependency fields are optional,
+    signal is not). The configurator now returns SIGTERM.
+  - Fix: saving config hung forever on StartOS 0.4. Its compat layer passes
+    the new config as a command-line argument, while 0.3.x piped it on
+    stdin — so the configurator blocked on a stdin that never received data
+    and was never closed. It now reads the argument and falls back to stdin.
+  - Beneficiary emails containing an ack link now say explicitly that a
+    .onion link opens only in Tor Browser, and where to get it. Without this
+    a beneficiary sees Chrome report the page as unavailable and reasonably
+    concludes the link is dead — so the warning is never acknowledged. The
+    notice appears only when the link really is an onion address.
+  - Packaging: shipped as a V2 s9pk. StartOS 0.4.x refuses to sideload the
+    V1 package format, so the package is now converted with
+    `start-cli s9pk convert` before release.
+  - Fix: the config spec omitted two keys that StartOS 0.3.x treated as
+    optional but 0.4 requires — `value-names` on enum fields and `integral`
+    on number fields — which made the Config dialog fail validation.
+  - Fix: the Config and Backup actions failed under StartOS 0.4 with
+    "SyntaxError: ... is not valid JSON". The 0.4 legacy compatibility layer
+    parses action output as JSON even when the manifest declares
+    `io-format: yaml`, so these actions now emit JSON (a valid YAML subset,
+    so older StartOS releases are unaffected).
+  - Fix: backup.sh wrote human-readable progress messages to stdout,
+    corrupting the structured result StartOS parses. They now go to stderr.
   - Fix: the switch's database session is now closed ONLY after deadman
     emails are confirmed delivered. Previously delivery was fire-and-forget
     and the switch was torn down regardless, so one SMTP failure at trigger
@@ -44,7 +83,6 @@ main:
   args: []
   mounts:
     main: /app/data
-    cert: /mnt/cert
   sigterm-timeout: 30s
 
 health-checks:
@@ -86,9 +124,12 @@ properties:
 volumes:
   main:
     type: data
-  cert:
-    type: certificate
-    interface-id: main
+# No `certificate` volume: StartOS terminates TLS for this interface and the
+# container serves plain HTTP on 3000 (docker_entrypoint.sh unsets
+# SSL_KEY_PATH/SSL_CERT_PATH, and nothing ever reads /mnt/cert). Declaring one
+# made the 0.4 compat layer request a cert covering every address on the
+# interface, including the public IPv4 — which StartOS rejects with
+# "unknown hostname", failing the whole request.
 
 interfaces:
   main:

@@ -9,9 +9,17 @@ DATABASE_DIR="/app/database"
 CONFIG_FILE="/app/.env"
 START9_CONFIG="/app/start9/config.yaml"
 
+# Progress messages go to stderr — stdout carries only the structured result,
+# which StartOS parses. (0.4's legacy shim parses it as JSON; JSON is valid
+# YAML, so the JSON emitted below works under 0.3.x too.)
+log() { echo "$@" >&2; }
+
+# Emit a JSON boolean for a path test
+json_bool() { [ -e "$1" ] && echo "true" || echo "false"; }
+
 # Create backup
 create_backup() {
-    echo "Creating Deadman Switch backup..."
+    log "Creating Deadman Switch backup..."
 
     # Create backup directory structure
     mkdir -p "$BACKUP_DIR/data"
@@ -20,34 +28,34 @@ create_backup() {
 
     # Backup user data directory
     if [ -d "$DATA_DIR" ]; then
-        echo "Backing up user data..."
+        log "Backing up user data..."
         cp -r "$DATA_DIR"/* "$BACKUP_DIR/data/" 2>/dev/null || true
-        echo "User data backed up"
+        log "User data backed up"
     else
-        echo "No user data directory found"
+        log "No user data directory found"
     fi
 
     # Backup database
     if [ -d "$DATABASE_DIR" ]; then
-        echo "Backing up database..."
+        log "Backing up database..."
         cp -r "$DATABASE_DIR"/* "$BACKUP_DIR/database/" 2>/dev/null || true
-        echo "Database backed up"
+        log "Database backed up"
     else
-        echo "No database directory found"
+        log "No database directory found"
     fi
 
     # Backup configuration files (excluding secrets)
     if [ -f "$CONFIG_FILE" ]; then
-        echo "Backing up configuration..."
+        log "Backing up configuration..."
         # Only backup non-sensitive config items
         grep -E "^(PORT|NODE_ENV|APP_URL)" "$CONFIG_FILE" > "$BACKUP_DIR/config/env.backup" 2>/dev/null || true
-        echo "Configuration backed up (secrets excluded)"
+        log "Configuration backed up (secrets excluded)"
     fi
 
     if [ -f "$START9_CONFIG" ]; then
-        echo "Backing up Start9 configuration..."
+        log "Backing up Start9 configuration..."
         cp "$START9_CONFIG" "$BACKUP_DIR/config/start9.yaml" 2>/dev/null || true
-        echo "Start9 configuration backed up"
+        log "Start9 configuration backed up"
     fi
 
     # Create backup manifest
@@ -66,32 +74,35 @@ create_backup() {
 }
 EOF
 
-    echo "Backup completed successfully"
-    echo "Backup location: $BACKUP_DIR"
+    log "Backup completed successfully"
+    log "Backup location: $BACKUP_DIR"
 
     # Output backup info for Start9
     cat << EOF
-backup_complete: true
-backup_size: "$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1 || echo 'unknown')"
-backup_timestamp: "$(date -Iseconds)"
-items_backed_up:
-  - user_data: $([ -d "$DATA_DIR" ] && echo "true" || echo "false")
-  - database: $([ -d "$DATABASE_DIR" ] && echo "true" || echo "false")
-  - configuration: $([ -f "$CONFIG_FILE" ] && echo "true" || echo "false")
+{
+  "backup_complete": true,
+  "backup_size": "$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1 || echo 'unknown')",
+  "backup_timestamp": "$(date -Iseconds)",
+  "items_backed_up": {
+    "user_data": $(json_bool "$DATA_DIR"),
+    "database": $(json_bool "$DATABASE_DIR"),
+    "configuration": $(json_bool "$CONFIG_FILE")
+  }
+}
 EOF
 }
 
 # Restore backup
 restore_backup() {
-    echo "Restoring Deadman Switch backup..."
+    log "Restoring Deadman Switch backup..."
 
     if [ ! -d "$BACKUP_DIR" ]; then
-        echo "Error: No backup directory found at $BACKUP_DIR"
+        log "Error: No backup directory found at $BACKUP_DIR"
         exit 1
     fi
 
     if [ ! -f "$BACKUP_DIR/manifest.json" ]; then
-        echo "Error: Invalid backup - missing manifest.json"
+        log "Error: Invalid backup - missing manifest.json"
         exit 1
     fi
 
@@ -101,25 +112,25 @@ restore_backup() {
 
     # Restore user data
     if [ -d "$BACKUP_DIR/data" ]; then
-        echo "Restoring user data..."
+        log "Restoring user data..."
         mkdir -p "$DATA_DIR"
         cp -r "$BACKUP_DIR/data"/* "$DATA_DIR/" 2>/dev/null || true
         chown -R deadman:nodejs "$DATA_DIR" 2>/dev/null || true
-        echo "User data restored"
+        log "User data restored"
     fi
 
     # Restore database
     if [ -d "$BACKUP_DIR/database" ]; then
-        echo "Restoring database..."
+        log "Restoring database..."
         mkdir -p "$DATABASE_DIR"
         cp -r "$BACKUP_DIR/database"/* "$DATABASE_DIR/" 2>/dev/null || true
         chown -R deadman:nodejs "$DATABASE_DIR" 2>/dev/null || true
-        echo "Database restored"
+        log "Database restored"
     fi
 
     # Restore configuration (merge with existing)
     if [ -f "$BACKUP_DIR/config/env.backup" ]; then
-        echo "Restoring configuration..."
+        log "Restoring configuration..."
 
         # If .env exists, preserve secrets and merge
         if [ -f "$CONFIG_FILE" ]; then
@@ -139,34 +150,38 @@ restore_backup() {
             # No existing config, just restore backup
             cp "$BACKUP_DIR/config/env.backup" "$CONFIG_FILE"
         fi
-        echo "Configuration restored"
+        log "Configuration restored"
     fi
 
     # Restore Start9 configuration
     if [ -f "$BACKUP_DIR/config/start9.yaml" ]; then
-        echo "Restoring Start9 configuration..."
+        log "Restoring Start9 configuration..."
         cp "$BACKUP_DIR/config/start9.yaml" "$START9_CONFIG"
-        echo "Start9 configuration restored"
+        log "Start9 configuration restored"
     fi
 
     # Set proper permissions
     chown -R deadman:nodejs /app/data /app/database 2>/dev/null || true
     chmod -R 755 /app/data /app/database 2>/dev/null || true
 
-    echo "Restore completed successfully"
+    log "Restore completed successfully"
 
     # Output restore info for Start9
     cat << EOF
-restore_complete: true
-restore_timestamp: "$(date -Iseconds)"
-items_restored:
-  - user_data: $([ -d "$BACKUP_DIR/data" ] && echo "true" || echo "false")
-  - database: $([ -d "$BACKUP_DIR/database" ] && echo "true" || echo "false")
-  - configuration: $([ -f "$BACKUP_DIR/config/env.backup" ] && echo "true" || echo "false")
-next_steps:
-  - "Service will restart automatically"
-  - "Reconfigure email settings if needed"
-  - "Verify deadman switch functionality"
+{
+  "restore_complete": true,
+  "restore_timestamp": "$(date -Iseconds)",
+  "items_restored": {
+    "user_data": $(json_bool "$BACKUP_DIR/data"),
+    "database": $(json_bool "$BACKUP_DIR/database"),
+    "configuration": $(json_bool "$BACKUP_DIR/config/env.backup")
+  },
+  "next_steps": [
+    "Service will restart automatically",
+    "Reconfigure email settings if needed",
+    "Verify deadman switch functionality"
+  ]
+}
 EOF
 }
 

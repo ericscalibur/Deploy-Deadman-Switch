@@ -19,6 +19,10 @@ spec:
     values:
       - gmail
       - smtp
+    # value-names is optional in StartOS 0.3.x but required by 0.4's validator
+    value-names:
+      gmail: Gmail
+      smtp: Custom SMTP
   gmail_user:
     type: string
     name: Gmail Address
@@ -49,6 +53,8 @@ spec:
     description: SMTP server port (usually 587 for TLS)
     nullable: true
     range: "[1,65535]"
+    # integral is optional in StartOS 0.3.x but required by 0.4's validator
+    integral: true
     default: 587
   smtp_user:
     type: string
@@ -77,8 +83,16 @@ spec:
 EOF
 }
 
-# Read saved config — try the running service first, then fall back to file
+# Emit the get response as JSON.
+# StartOS 0.4's legacy compat shim parses action stdout as JSON even when the
+# manifest declares `io-format: yaml`. JSON is a subset of YAML, so emitting
+# JSON satisfies both the 0.4 shim and the 0.3.x YAML parser.
 get_config() {
+    get_config_yaml | yq e -o=json '.' -
+}
+
+# Read saved config — try the running service first, then fall back to file
+get_config_yaml() {
     config_spec
 
     RESPONSE=$(curl -sf --max-time 3 "$INTERNAL_URL" 2>/dev/null) || RESPONSE=""
@@ -125,8 +139,19 @@ EOF
 }
 
 # Save config — try the running service's internal API first, then fall back to files
+#
+# The new config arrives differently depending on the host: StartOS 0.4's
+# legacy compat layer appends it as a command-line argument (see
+# SystemForEmbassy.setConfig, which builds [entrypoint, ...args, JSON]),
+# whereas 0.3.x piped it on stdin. Prefer the argument and fall back to stdin
+# — reading stdin unconditionally hangs forever under 0.4, because nothing is
+# ever written to it and the procedure is invoked with no timeout.
 set_config() {
-    CONFIG_INPUT=$(cat)
+    if [ -n "${1:-}" ]; then
+        CONFIG_INPUT="$1"
+    else
+        CONFIG_INPUT=$(cat)
+    fi
 
     EMAIL_PROVIDER=$(echo "$CONFIG_INPUT" | yq e '.email_provider // "gmail"' -)
     GMAIL_USER=$(echo "$CONFIG_INPUT" | yq e '.gmail_user // ""' -)
@@ -193,8 +218,11 @@ SMTP_PASS=${SMTP_PASS}
 EOF
     fi
 
-    # Required by Start9 — signals successful config save
-    echo "depends-on: {}"
+    # Required by Start9 — signals successful config save (JSON, see get_config).
+    # `signal` is mandatory in 0.4's matchSetResult schema (unlike depends-on,
+    # which is optional), even though the docker branch parses and discards it.
+    # SIGTERM is the correct 0.3.x semantic: restart main so the new .env is read.
+    echo '{"depends-on":{},"signal":"SIGTERM"}'
 }
 
 case "$ACTION" in
@@ -202,7 +230,8 @@ case "$ACTION" in
         get_config
         ;;
     set)
-        set_config
+        # "$2" is the JSON config when the host passes it as an argument
+        set_config "${2:-}"
         ;;
     *)
         echo "Usage: $0 [get|set]"

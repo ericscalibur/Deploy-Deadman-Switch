@@ -8,6 +8,33 @@ const { RECOVERY_SPEC_TEXT, RECOVERY_SPEC_HTML } = require("./recoverySpec");
 // all; URGENT marks the beneficiary pre-fire warning; CRITICAL is reserved
 // for the trigger itself; WARNING marks operator-side operational alerts.
 
+// Beneficiary-facing links point back at the operator's own server, which is
+// normally a Tor onion address. Chrome/Safari cannot resolve .onion at all and
+// report it as an ordinary dead page — so a beneficiary who is never told this
+// reads a working ack link as a broken one (or as phishing) and silently never
+// acknowledges. Say it explicitly, but only when the link actually needs Tor:
+// on a clearnet or LAN deployment these instructions would be noise.
+function torNotice(url) {
+  if (!/\.onion(?::\d+)?(?:\/|$)/i.test(String(url || ""))) {
+    return { html: "", text: "" };
+  }
+  return {
+    html: `
+        <p style="border-left: 4px solid #7d4698; padding-left: 15px; margin: 20px 0;">
+          <strong>This link only opens in Tor Browser.</strong> It is a
+          <code>.onion</code> address. Ordinary browsers such as Chrome, Safari
+          or Firefox cannot reach it and will report the page as unavailable —
+          that does not mean the link is broken. Install Tor Browser (free,
+          takes a few minutes) from
+          <a href="https://www.torproject.org/download/">torproject.org/download</a>,
+          then paste the link above into it.
+        </p>`,
+    text: `
+This link only opens in Tor Browser. It is a .onion address. Ordinary browsers such as Chrome, Safari or Firefox cannot reach it and will report the page as unavailable — that does not mean the link is broken. Install Tor Browser (free, takes a few minutes) from https://www.torproject.org/download/ then paste the link above into it.
+`,
+  };
+}
+
 // Email service for sending check-in and deadman emails
 class EmailService {
   constructor() {
@@ -508,6 +535,8 @@ Convenience link (may rot): https://ericscalibur.github.io/Legacy_Encryption/ind
     const daysText =
       daysRemaining > 0 ? `approximately ${daysRemaining} days` : "very soon";
 
+    const tor = torNotice(ackUrl);
+
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
       to: recipientEmail,
@@ -530,7 +559,7 @@ Convenience link (may rot): https://ericscalibur.github.io/Legacy_Encryption/ind
           <li><strong>Confirm you received this warning</strong> by clicking:
           <a href="${ackUrl}">${ackUrl}</a> — this only confirms this address works;
           it does not trigger or stop anything.</li>
-        </ol>
+        </ol>${tor.html}
         <p>This warning contains no sensitive information. If the final message is
         sent later, it will arrive from a different sender address and will be
         marked CRITICAL.</p>
@@ -550,7 +579,7 @@ What you should do now:
 2. Confirm you received this warning by opening this link:
 ${ackUrl}
 This only confirms this address works; it does not trigger or stop anything.
-
+${tor.text}
 This warning contains no sensitive information. If the final message is sent later, it will arrive from a different sender address and will be marked CRITICAL.
 
 Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
@@ -585,6 +614,8 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
       return false;
     }
 
+    const tor = torNotice(ackUrl);
+
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
       to: recipientEmail,
@@ -594,7 +625,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
         notification system that <strong>${operatorEmail}</strong> set up with you
         in mind. Nothing is wrong and nothing is being sent to you.</p>
         <p><strong>Please confirm this address still works by clicking:</strong><br>
-        <a href="${ackUrl}">${ackUrl}</a></p>
+        <a href="${ackUrl}">${ackUrl}</a></p>${tor.html}
         <p>If you don't confirm within 30 days, ${operatorEmail} will be alerted
         that this address may no longer be in use.</p>
         <p><small>Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. You should expect exactly one of these per year.</small></p>
@@ -604,7 +635,7 @@ This is the once-a-year address verification from the automated notification sys
 
 Please confirm this address still works by opening this link:
 ${ackUrl}
-
+${tor.text}
 If you don't confirm within 30 days, ${operatorEmail} will be alerted that this address may no longer be in use.
 
 Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. You should expect exactly one of these per year.

@@ -292,7 +292,76 @@
                 return out;
             }
 
-            async function decodePixelData(d1, w1, h1, d2, w2, h2, file) {
+            // Resample RGBA pixels in pure JS. Canvas would be easier but Tor
+            // Browser blocks reading pixels back out of it, which is why this
+            // whole path exists. Downscaling box-averages — that is what kills
+            // the moiré you get photographing an LCD, and it is usually what
+            // rescues a phone photo that fails at native resolution.
+            function resamplePixels(data, w, h, scale) {
+                const nw = Math.max(1, Math.round(w * scale));
+                const nh = Math.max(1, Math.round(h * scale));
+                const out = new Uint8ClampedArray(nw * nh * 4);
+                if (scale < 1) {
+                    const bx = w / nw, by = h / nh;
+                    for (let y = 0; y < nh; y++) {
+                        const y0 = Math.floor(y * by), y1 = Math.min(h, Math.ceil((y + 1) * by));
+                        for (let x = 0; x < nw; x++) {
+                            const x0 = Math.floor(x * bx), x1 = Math.min(w, Math.ceil((x + 1) * bx));
+                            let r = 0, g = 0, b = 0, n = 0;
+                            for (let sy = y0; sy < y1; sy++) {
+                                for (let sx = x0; sx < x1; sx++) {
+                                    const i = (sy * w + sx) * 4;
+                                    r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+                                }
+                            }
+                            const o = (y * nw + x) * 4;
+                            out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n; out[o + 3] = 255;
+                        }
+                    }
+                } else {
+                    for (let y = 0; y < nh; y++) {
+                        const sy = Math.min(h - 1, Math.floor(y / scale));
+                        for (let x = 0; x < nw; x++) {
+                            const sx = Math.min(w - 1, Math.floor(x / scale));
+                            const i = (sy * w + sx) * 4, o = (y * nw + x) * 4;
+                            out[o] = data[i]; out[o + 1] = data[i + 1]; out[o + 2] = data[i + 2]; out[o + 3] = 255;
+                        }
+                    }
+                }
+                return { data: out, width: nw, height: nh, label: scale + "x" };
+            }
+
+            // Centre crop, for when the QR is a small part of a wide frame
+            function cropPixels(data, w, h, frac) {
+                const nw = Math.max(1, Math.round(w * frac));
+                const nh = Math.max(1, Math.round(h * frac));
+                const ox = Math.floor((w - nw) / 2), oy = Math.floor((h - nh) / 2);
+                const out = new Uint8ClampedArray(nw * nh * 4);
+                for (let y = 0; y < nh; y++) {
+                    for (let x = 0; x < nw; x++) {
+                        const i = ((y + oy) * w + (x + ox)) * 4, o = (y * nw + x) * 4;
+                        out[o] = data[i]; out[o + 1] = data[i + 1]; out[o + 2] = data[i + 2]; out[o + 3] = 255;
+                    }
+                }
+                return { data: out, width: nw, height: nh, label: "crop" + frac };
+            }
+
+            // Build the set of images to attempt, cheapest/likeliest first.
+            // Upscaling is skipped on large photos — 2x of a 12MP image is
+            // ~200MB of RGBA and will simply die on a phone.
+            function buildVariants(data, w, h) {
+                const variants = [{ data, width: w, height: h, label: "native" }];
+                for (const s of [0.5, 0.75, 0.35]) variants.push(resamplePixels(data, w, h, s));
+                if (w * h <= 2500000) variants.push(resamplePixels(data, w, h, 2));
+                const crop = cropPixels(data, w, h, 0.6);
+                variants.push(crop);
+                if (crop.width * crop.height <= 2500000) {
+                    variants.push(resamplePixels(crop.data, crop.width, crop.height, 2));
+                }
+                return variants;
+            }
+
+            async function decodePixelData(variants, file) {
                 // 1. BarcodeDetector — no canvas read needed
                 if ("BarcodeDetector" in window) {
                     try {
@@ -310,24 +379,24 @@
                     hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
                     const reader = new ZXing.MultiFormatReader();
                     reader.setHints(hints);
-                    for (const [d, w, h] of [[d1, w1, h1], [d2, w2, h2]]) {
+                    for (const v of variants) {
                         try {
-                            const u32 = new Uint32Array(d.buffer);
-                            const lum = new ZXing.RGBLuminanceSource(u32, w, h, w, h, 0, 0);
+                            const u32 = new Uint32Array(v.data.buffer);
+                            const lum = new ZXing.RGBLuminanceSource(u32, v.width, v.height, v.width, v.height, 0, 0);
                             const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
                             const result = reader.decode(bmp);
                             const text = result?.getText();
-                            console.log("[QR] ZXing", w, "x", h, ":", text ? "found" : "null");
+                            console.log("[QR] ZXing", v.label, v.width, "x", v.height, ":", text ? "found" : "null");
                             if (text) return text;
-                        } catch (e) { console.log("[QR] ZXing", w, "x", h, ":", e.message); }
+                        } catch (e) { console.log("[QR] ZXing", v.label, v.width, "x", v.height, ":", e.message); }
                     }
                 } catch (e) { console.log("[QR] ZXing setup:", e.message); }
 
-                // 3. jsQR with contrast stretch at both resolutions
-                for (const [d, w, h] of [[d1, w1, h1], [d2, w2, h2]]) {
-                    const stretched = stretchPixels(d);
-                    const code = jsQR(stretched, w, h, { inversionAttempts: "attemptBoth" });
-                    console.log("[QR] jsQR", w, "x", h, ":", code ? "found" : "null");
+                // 3. jsQR with contrast stretch, every variant
+                for (const v of variants) {
+                    const stretched = stretchPixels(v.data);
+                    const code = jsQR(stretched, v.width, v.height, { inversionAttempts: "attemptBoth" });
+                    console.log("[QR] jsQR", v.label, v.width, "x", v.height, ":", code ? "found" : "null");
                     if (code?.data) return code.data;
                 }
 
@@ -361,15 +430,12 @@
                         setStatus("Canvas read blocked: " + e.message + ". Try a different browser.", "error");
                         return;
                     }
-                    canvas.width  = img.naturalWidth  * 2;
-                    canvas.height = img.naturalHeight * 2;
-                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                    let d2, w2 = canvas.width, h2 = canvas.height;
-                    try { d2 = ctx.getImageData(0, 0, w2, h2); }
-                    catch (e) { d2 = d1; w2 = w1; h2 = h1; }
                     console.log("[QR] canvas pixel[0]:", d1.data[0], d1.data[1], d1.data[2], d1.data[3]);
                     URL.revokeObjectURL(url);
-                    decodePixelData(d1.data, w1, h1, d2.data, w2, h2, file).then(handleDecodeResult);
+                    const variants = buildVariants(d1.data, w1, h1);
+                    console.log("[QR] trying", variants.length, "variants:",
+                                variants.map(v => v.label + " " + v.width + "x" + v.height).join(", "));
+                    decodePixelData(variants, file).then(handleDecodeResult);
                 };
                 img.onerror = () => {
                     URL.revokeObjectURL(url);
@@ -428,11 +494,10 @@
                     }
 
                     if (pixelData) {
-                        const decoded = await decodePixelData(
-                            pixelData.data, pixelData.width, pixelData.height,
-                            pixelData.data, pixelData.width, pixelData.height,
-                            file
-                        );
+                        const variants = buildVariants(pixelData.data, pixelData.width, pixelData.height);
+                        console.log("[QR] trying", variants.length, "variants:",
+                                    variants.map(v => v.label + " " + v.width + "x" + v.height).join(", "));
+                        const decoded = await decodePixelData(variants, file);
                         handleDecodeResult(decoded);
                     } else {
                         // Fallback for non-PNG/JPEG or missing libs — canvas draw
