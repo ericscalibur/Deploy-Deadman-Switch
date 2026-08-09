@@ -1,6 +1,5 @@
 const nodemailer = require("nodemailer");
 const QRCode = require("qrcode");
-const { RECOVERY_SPEC_TEXT, RECOVERY_SPEC_HTML } = require("./recoverySpec");
 
 // Subject-line severity coding (Issue #4): plain words, never emoji — emoji
 // in subjects is the signature of marketing mail and is exactly what spam
@@ -437,13 +436,40 @@ This is an automated message from Deploy Deadman Switch.
           }
         }
 
-        // Recovery material rides in the email itself (Issue #5): the
-        // ciphertext, the instructions, and a plain-language spec that lets
-        // a competent stranger reimplement decryption if the beneficiary's
-        // copy of the tool no longer runs. The project link is convenience
-        // only — this message must stand alone for decades.
-        const specHtml = email.payload ? RECOVERY_SPEC_HTML : "";
-        const specText = email.payload ? `\n${RECOVERY_SPEC_TEXT}\n` : "";
+        // The encrypted payload rides in the email itself; the how-to-decrypt
+        // lives at the Legacy site (decrypt page, downloadable offline copy,
+        // and the full reimplementation spec in FAQ item 10). Keeping the
+        // spec out of the email trades the stand-alone-for-decades property
+        // for an email a beneficiary can actually read without panic.
+        const decryptUrl =
+          "https://ericscalibur.github.io/Legacy_Encryption/decrypt.html";
+        const offlineUrl =
+          "https://github.com/ericscalibur/Legacy_Encryption/blob/main/Legacy-offline.html";
+        const faqUrl =
+          "https://ericscalibur.github.io/Legacy_Encryption/FAQ.html";
+        const specHtml = email.payload
+          ? `
+            <h3>How to decrypt</h3>
+            <p>To decrypt your seedphrase, paste the cypher text into the
+            Encrypted Seed Phrase field, enter your Beneficiary Key and the
+            Benefactor Key. Click 'Decrypt'.</p>
+            <p><a href="${decryptUrl}">Legacy Decryption</a> &mdash; or download the
+            <a href="${offlineUrl}">offline version</a> to run on a computer
+            with no internet connection.</p>
+            <p>For more information see the <a href="${faqUrl}">FAQ</a>.</p>`
+          : "";
+        const specText = email.payload
+          ? `
+How to decrypt
+
+To decrypt your seedphrase, paste the cypher text into the Encrypted Seed Phrase field, enter your Beneficiary Key and the Benefactor Key. Click 'Decrypt'.
+
+Legacy Decryption: ${decryptUrl}
+Offline version (download to run without internet): ${offlineUrl}
+
+For more information see the FAQ: ${faqUrl}
+`
+          : "";
 
         const mailOptions = {
           from: `"${userEmail} (Deploy Deadman Switch)" <${this._triggerFromAddress()}>`,
@@ -461,7 +487,7 @@ This is an automated message from Deploy Deadman Switch.
             <hr>
             <p><small>This message was sent automatically by Deploy Deadman Switch service.</small></p>
             <p><small>Original sender: ${userEmail}</small></p>
-            <p><small>Print or save this entire email — it contains everything needed for recovery and does not depend on any website staying online. (Convenience link, may rot: <a href="https://ericscalibur.github.io/Legacy_Encryption/index.html">Legacy</a>.)</small></p>
+            <p><small>Print or save this entire email — it contains the encrypted payload needed for recovery.</small></p>
           `,
           text: `
 Important Message
@@ -477,8 +503,7 @@ ${specText}
 
 This message was sent automatically by Deploy Deadman Switch service.
 Original sender: ${userEmail}
-Print or save this entire email — it contains everything needed for recovery and does not depend on any website staying online.
-Convenience link (may rot): https://ericscalibur.github.io/Legacy_Encryption/index.html
+Print or save this entire email — it contains the encrypted payload needed for recovery.
           `,
         };
 
@@ -606,7 +631,15 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
   // exercised exactly once, years out, at the one moment nobody remains to
   // notice it failed — this keeps the address proven continuously. Kept
   // deliberately boring and rare (Issue #4: volume is the real lever).
-  async sendBeneficiaryPing(recipientEmail, operatorEmail, ackUrl) {
+  // firstContact selects introduction wording for an address that has never
+  // been contacted (sent the moment a switch is armed); the default wording
+  // is the annual renewal.
+  async sendBeneficiaryPing(
+    recipientEmail,
+    operatorEmail,
+    ackUrl,
+    firstContact = false,
+  ) {
     if (!(await this.ensureReady())) {
       console.error(
         `❌ Email service not initialized — beneficiary ping to ${recipientEmail} NOT sent.`,
@@ -616,29 +649,48 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
 
     const tor = torNotice(ackUrl);
 
-    const mailOptions = {
-      from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
-      to: recipientEmail,
-      subject: `Annual contact check for ${operatorEmail} — one click required`,
-      html: `
-        <p>This is the once-a-year address verification from the automated
+    const subject = firstContact
+      ? `${operatorEmail} listed you as a trusted contact — one click required`
+      : `Annual contact check for ${operatorEmail} — one click required`;
+    const introHtml = firstContact
+      ? `<p><strong>${operatorEmail}</strong> has set up an automated notification
+        system and listed this address as a trusted contact. If they ever become
+        unreachable for a long period, this system will send you important
+        information they prepared. Nothing is wrong and nothing is being sent
+        to you now.</p>
+        <p>To confirm the line of communication works, <strong>please click:</strong><br>
+        <a href="${ackUrl}">${ackUrl}</a></p>`
+      : `<p>This is the once-a-year address verification from the automated
         notification system that <strong>${operatorEmail}</strong> set up with you
         in mind. Nothing is wrong and nothing is being sent to you.</p>
         <p><strong>Please confirm this address still works by clicking:</strong><br>
-        <a href="${ackUrl}">${ackUrl}</a></p>${tor.html}
-        <p>If you don't confirm within 30 days, ${operatorEmail} will be alerted
-        that this address may no longer be in use.</p>
-        <p><small>Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. You should expect exactly one of these per year.</small></p>
-      `,
-      text: `
-This is the once-a-year address verification from the automated notification system that ${operatorEmail} set up with you in mind. Nothing is wrong and nothing is being sent to you.
+        <a href="${ackUrl}">${ackUrl}</a></p>`;
+    const introText = firstContact
+      ? `${operatorEmail} has set up an automated notification system and listed this address as a trusted contact. If they ever become unreachable for a long period, this system will send you important information they prepared. Nothing is wrong and nothing is being sent to you now.
+
+To confirm the line of communication works, please open this link:
+${ackUrl}`
+      : `This is the once-a-year address verification from the automated notification system that ${operatorEmail} set up with you in mind. Nothing is wrong and nothing is being sent to you.
 
 Please confirm this address still works by opening this link:
-${ackUrl}
+${ackUrl}`;
+
+    const mailOptions = {
+      from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+      to: recipientEmail,
+      subject,
+      html: `
+        ${introHtml}${tor.html}
+        <p>If you don't confirm within 30 days, ${operatorEmail} will be alerted
+        that this address may no longer be in use.</p>
+        <p><small>Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.</small></p>
+      `,
+      text: `
+${introText}
 ${tor.text}
 If you don't confirm within 30 days, ${operatorEmail} will be alerted that this address may no longer be in use.
 
-Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. You should expect exactly one of these per year.
+Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.
       `,
     };
 
@@ -652,6 +704,56 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. You 
     } catch (error) {
       console.error(
         `❌ Failed to send beneficiary ping to ${recipientEmail}:`,
+        error,
+      );
+      return false;
+    }
+  }
+
+  // The beneficiary clicked the ack link — tell the operator the line of
+  // communication is confirmed open. For privacy the address is not named
+  // (the dashboard's per-recipient "Last contact" line shows which).
+  async sendPingConfirmedNotice(operatorEmail, firstContact) {
+    if (!(await this.ensureReady())) {
+      console.error(
+        `❌ Email service not initialized — ping-confirmed notice to ${operatorEmail} NOT sent.`,
+      );
+      return false;
+    }
+
+    const lead = firstContact
+      ? "A recipient has confirmed they can receive messages from your deadman switch — the line of communication is open."
+      : "A recipient has answered this year's address check — their contact address is still live.";
+
+    const mailOptions = {
+      from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+      to: operatorEmail,
+      subject: "A recipient confirmed their contact address",
+      html: `
+        <p><strong>${lead}</strong></p>
+        <p>To see which recipient (and when), open your Deploy dashboard —
+        each recipient shows a "Last contact" date. No action is needed.</p>
+        <p><small>Automated message from Deploy Deadman Switch.</small></p>
+      `,
+      text: `
+${lead}
+
+To see which recipient (and when), open your Deploy dashboard — each recipient shows a "Last contact" date. No action is needed.
+
+Automated message from Deploy Deadman Switch.
+      `,
+    };
+
+    try {
+      const { info } = await this._sendWithFallback(mailOptions);
+      console.log(
+        `✅ Ping-confirmed notice sent to ${operatorEmail}`,
+        info.messageId,
+      );
+      return true;
+    } catch (error) {
+      console.error(
+        `❌ Failed to send ping-confirmed notice to ${operatorEmail}:`,
         error,
       );
       return false;

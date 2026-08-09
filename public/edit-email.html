@@ -569,7 +569,10 @@
                             }
 
                             localStorage.setItem("emails", JSON.stringify(emails));
-                            alert("Email saved successfully!");
+                            const saveData = await response.json().catch(() => ({}));
+                            alert(saveData.activeSwitchUpdated
+                                ? "Email saved successfully!\n\nYour deadman switch is armed — this change is live and will be included when the switch fires."
+                                : "Email saved successfully!");
                             window.location.href = "/index.html";
                         } else {
                             const errorData = await response.json();

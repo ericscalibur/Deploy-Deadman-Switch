@@ -1,7 +1,42 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.0.8
+version: 2.0.12
 release-notes: |
+  - Beneficiary contact is now established the moment a switch is armed:
+    every never-verified recipient immediately gets a first-contact email
+    introducing the system, with a one-click confirmation link. Previously
+    the first contact waited for the daily sweep — up to 24h later, and
+    never on a short-lived test switch. Recipients added to an armed switch
+    are contacted immediately too.
+  - When a recipient clicks the confirmation link, the operator now gets a
+    notice that the line of communication is open (and on later annual
+    checks, that the address is still live). The notice does not name the
+    address; the dashboard's "Last contact" line shows which.
+  - The annual cycle is testable at short intervals via env overrides:
+    PING_INTERVAL_MS, PING_ACK_GRACE_MS, BENEFICIARY_SWEEP_INTERVAL_MS.
+  - Fix: beneficiary changes made while a switch is armed now take effect
+    immediately. Previously edits only changed the stored data — the armed
+    switch kept firing at its activation-time snapshot, so beneficiaries
+    added after deployment were silently excluded and removed ones still
+    received the trigger email. Adds, edits and deletes now propagate to
+    the live switch (including the encrypted envelope used for delivery
+    after a restart), and the UI says so explicitly when it happens.
+  - Guard: the last remaining recipient cannot be deleted while the switch
+    is armed — deactivate first. A switch that fires to nobody is worse
+    than one that refuses the edit.
+  - The trigger email no longer embeds the full Legacy decryption
+    specification. It now carries the user's message, the encrypted payload
+    and QR, and short instructions linking to the Legacy decrypt page, the
+    downloadable offline copy, and the FAQ — where the full reimplementation
+    spec now lives (Legacy_Encryption FAQ item 10). The payload itself still
+    rides in the email; only the how-to-decrypt moved behind links.
+  - The dashboard now shows each recipient's contact status under their
+    address: "Last contact" with the date they last confirmed via the
+    annual address check, "awaiting reply" while a check is outstanding,
+    or "first annual check pending". Ping records are stored keyed by
+    address hash only, so the mapping to readable addresses happens after
+    decrypting the recipient list with the operator's password (new
+    POST /deadman/beneficiary-status endpoint).
   - Fix: Backup actually backs up data now. The backup procedures declared
     no volume mounts, so backup.sh copied empty directories to an unmounted
     target and reported success while saving nothing — and Restore

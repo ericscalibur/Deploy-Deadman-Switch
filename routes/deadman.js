@@ -26,13 +26,20 @@ const {
 const WARNING_MISSED_CHECKINS =
   parseInt(process.env.WARNING_MISSED_CHECKINS, 10) ||
   DEFAULT_WARNING_MISSED_CHECKINS;
+// Millisecond-level overrides exist so the annual cycle can be exercised in
+// minutes on a test install; the *_DAYS variables remain the production knobs.
 const PING_INTERVAL_MS =
+  parseInt(process.env.PING_INTERVAL_MS, 10) ||
   (parseInt(process.env.PING_INTERVAL_DAYS, 10) ||
     DEFAULT_PING_INTERVAL_DAYS) *
-  24 * 60 * 60 * 1000;
+    24 * 60 * 60 * 1000;
 const PING_ACK_GRACE_MS =
+  parseInt(process.env.PING_ACK_GRACE_MS, 10) ||
   (parseInt(process.env.PING_ACK_GRACE_DAYS, 10) ||
     DEFAULT_PING_ACK_GRACE_DAYS) *
+    24 * 60 * 60 * 1000;
+const BENEFICIARY_SWEEP_INTERVAL_MS =
+  parseInt(process.env.BENEFICIARY_SWEEP_INTERVAL_MS, 10) ||
   24 * 60 * 60 * 1000;
 
 function appUrl() {
@@ -396,6 +403,56 @@ function getRecipientsFor(userEmail, switchData) {
   );
 }
 
+// Keep an armed switch's recipient list in step with edits made after
+// deployment. Without this, /emails edits only change the encrypted user
+// data while the armed switch keeps firing at its activation-time snapshot —
+// beneficiaries added later are silently excluded, and removed ones still
+// receive the trigger email (with the encrypted payload in it).
+// Updates every place the fire paths read: the in-memory map, the switch
+// settings, and the SECRET_KEY-encrypted envelope that post-restart
+// recovery fires from. Returns true if an armed switch was updated.
+async function syncActiveSwitchRecipients(userEmail, emails) {
+  const switchData = activeDeadmanSwitches.get(userEmail);
+  if (!switchData) return false;
+
+  userEmails.set(userEmail, emails);
+  if (switchData.settings) switchData.settings.emails = emails;
+
+  if (switchData.sessionToken) {
+    try {
+      const serverBlob = cryptoUtils.encryptEmailsWithServerKey(emails);
+      await userService.saveServerRecoverableEmails(
+        switchData.sessionToken,
+        serverBlob,
+      );
+      console.log(
+        `🔐 SYNC: Server-recoverable envelope refreshed for ${userEmail} (${emails.length} recipients)`,
+      );
+    } catch (error) {
+      console.error(
+        `❌ SYNC: Failed to refresh server-recoverable envelope for ${userEmail}:`,
+        error,
+      );
+    }
+  }
+
+  console.log(
+    `🔄 SYNC: Armed switch recipients updated for ${userEmail} (${emails.length} recipients)`,
+  );
+
+  // A beneficiary added to an armed switch gets first contact immediately;
+  // pingAction() skips everyone already verified.
+  processBeneficiaryPings(switchData.userId, userEmail, emails).catch(
+    (error) =>
+      console.error(
+        `❌ PING: First-contact pass after recipient edit failed for ${userEmail}:`,
+        error,
+      ),
+  );
+
+  return true;
+}
+
 // Beneficiary addresses are only ever persisted as SHA-256 hashes
 // (beneficiary_pings table) so liveness tracking doesn't weaken the
 // encrypted-at-rest guarantee.
@@ -559,77 +616,84 @@ async function runBeneficiaryPingSweep() {
         continue;
       }
 
-      const seen = new Set();
-      for (const recipient of recipients) {
-        const addr = recipient.to || recipient.address;
-        if (!addr) continue;
-        const emailHash = hashEmail(addr);
-        if (seen.has(emailHash)) continue;
-        seen.add(emailHash);
-
-        const ping = await userService.getBeneficiaryPing(
-          session.user_id,
-          emailHash,
-        );
-        const action = pingAction({
-          now: Date.now(),
-          pingSentAt:
-            ping && ping.ping_sent_at
-              ? parseDbTimestamp(ping.ping_sent_at).getTime()
-              : null,
-          ackAt:
-            ping && ping.ack_at ? parseDbTimestamp(ping.ack_at).getTime() : null,
-          operatorAlertedAt:
-            ping && ping.operator_alerted_at
-              ? parseDbTimestamp(ping.operator_alerted_at).getTime()
-              : null,
-          intervalMs: PING_INTERVAL_MS,
-          graceMs: PING_ACK_GRACE_MS,
-        });
-
-        if (action === "send") {
-          const pingToken = crypto.randomBytes(32).toString("hex");
-          const ackUrl = `${appUrl()}/deadman/ack/${pingToken}`;
-          const sent = await emailService.sendBeneficiaryPing(
-            addr,
-            session.email,
-            ackUrl,
-          );
-          if (sent) {
-            await userService.saveBeneficiaryPingSent(
-              session.user_id,
-              emailHash,
-              pingToken,
-            );
-            console.log(
-              `📮 PING SWEEP: Liveness ping sent for ${session.email}'s recipient`,
-            );
-          }
-        } else if (action === "alert-operator") {
-          const graceDays = Math.round(PING_ACK_GRACE_MS / 86400000);
-          const alerted = await emailService.sendAlertEmail(
-            session.email,
-            "WARNING: a recipient address may be dead — action needed",
-            `<h2>Recipient address unresponsive</h2>
-             <p>One of your configured recipients has not confirmed the annual
-             address check sent more than ${graceDays} days ago. If that address
-             is no longer in use, your deadman switch could one day fire into a
-             void — the exact failure this check exists to catch early.</p>
-             <p><strong>Log in to Deploy, review your recipient list, and ask your
-             recipients which of them did not get a verification email.</strong>
-             (For privacy this alert does not name the address.)</p>`,
-          );
-          if (alerted) {
-            await userService.markPingOperatorAlerted(ping.id);
-            console.log(
-              `🔶 PING SWEEP: Operator ${session.email} alerted about unresponsive recipient`,
-            );
-          }
-        }
-      }
+      await processBeneficiaryPings(session.user_id, session.email, recipients);
     }
   } catch (error) {
     console.error("❌ PING SWEEP: Sweep failed:", error);
+  }
+}
+
+// Run the ping decision for every recipient of one operator. Called by the
+// daily sweep, at activation (so first contact is established the moment a
+// switch is armed, not up to a day later), and when recipients are edited on
+// an armed switch (so a newly added beneficiary is contacted immediately).
+// pingAction() makes it idempotent — already-verified addresses are skipped
+// until their annual renewal is due.
+async function processBeneficiaryPings(userId, operatorEmail, recipients) {
+  const seen = new Set();
+  for (const recipient of recipients) {
+    const addr = recipient.to || recipient.address;
+    if (!addr) continue;
+    const emailHash = hashEmail(addr);
+    if (seen.has(emailHash)) continue;
+    seen.add(emailHash);
+
+    const ping = await userService.getBeneficiaryPing(userId, emailHash);
+    const action = pingAction({
+      now: Date.now(),
+      pingSentAt:
+        ping && ping.ping_sent_at
+          ? parseDbTimestamp(ping.ping_sent_at).getTime()
+          : null,
+      ackAt:
+        ping && ping.ack_at ? parseDbTimestamp(ping.ack_at).getTime() : null,
+      operatorAlertedAt:
+        ping && ping.operator_alerted_at
+          ? parseDbTimestamp(ping.operator_alerted_at).getTime()
+          : null,
+      intervalMs: PING_INTERVAL_MS,
+      graceMs: PING_ACK_GRACE_MS,
+    });
+
+    if (action === "send") {
+      // No ping row at all means this address has never been contacted —
+      // the email introduces the system instead of reading like a renewal.
+      const firstContact = !ping;
+      const pingToken = crypto.randomBytes(32).toString("hex");
+      const ackUrl = `${appUrl()}/deadman/ack/${pingToken}`;
+      const sent = await emailService.sendBeneficiaryPing(
+        addr,
+        operatorEmail,
+        ackUrl,
+        firstContact,
+      );
+      if (sent) {
+        await userService.saveBeneficiaryPingSent(userId, emailHash, pingToken);
+        console.log(
+          `📮 PING: ${firstContact ? "First-contact" : "Renewal"} ping sent for ${operatorEmail}'s recipient`,
+        );
+      }
+    } else if (action === "alert-operator") {
+      const graceDays = Math.round(PING_ACK_GRACE_MS / 86400000);
+      const alerted = await emailService.sendAlertEmail(
+        operatorEmail,
+        "WARNING: a recipient address may be dead — action needed",
+        `<h2>Recipient address unresponsive</h2>
+         <p>One of your configured recipients has not confirmed the
+         address check sent more than ${graceDays} days ago. If that address
+         is no longer in use, your deadman switch could one day fire into a
+         void — the exact failure this check exists to catch early.</p>
+         <p><strong>Log in to Deploy, review your recipient list, and ask your
+         recipients which of them did not get a verification email.</strong>
+         (For privacy this alert does not name the address.)</p>`,
+      );
+      if (alerted) {
+        await userService.markPingOperatorAlerted(ping.id);
+        console.log(
+          `🔶 PING: Operator ${operatorEmail} alerted about unresponsive recipient`,
+        );
+      }
+    }
   }
 }
 
@@ -637,7 +701,7 @@ async function runBeneficiaryPingSweep() {
 // daily. New installs therefore verify every beneficiary address immediately
 // on arming rather than a year later.
 setTimeout(runBeneficiaryPingSweep, 30000);
-setInterval(runBeneficiaryPingSweep, 24 * 60 * 60 * 1000);
+setInterval(runBeneficiaryPingSweep, BENEFICIARY_SWEEP_INTERVAL_MS);
 
 // Deliver the deadman emails, closing the DB session ONLY on success (at
 // least one recipient reached). On total failure — e.g. the network is not
@@ -1035,10 +1099,17 @@ router.post("/emails", authenticateToken, async (req, res) => {
       req.get("User-Agent"),
     );
 
+    // If a switch is armed, propagate the edit to it immediately
+    const activeSwitchUpdated = await syncActiveSwitchRecipients(
+      userEmail,
+      existingEmails,
+    );
+
     res.json({
       success: true,
       message: "Email saved successfully",
       emailCount: existingEmails.length,
+      activeSwitchUpdated,
     });
   } catch (error) {
     console.error("Error saving email:", error);
@@ -1080,6 +1151,54 @@ router.get("/emails", authenticateToken, async (req, res) => {
   }
 });
 
+// Per-beneficiary contact status for the dashboard. Ping rows are keyed by
+// SHA-256 of the address (plaintext never lands in beneficiary_pings), so
+// the mapping back to readable addresses can only be made here, after
+// decrypting the recipient list with the user's password. POST, not GET —
+// the password must not ride in a URL.
+router.post("/beneficiary-status", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const password = req.body.password;
+    if (!password) {
+      return res
+        .status(400)
+        .json({ message: "Password required for decryption" });
+    }
+
+    const user = await userService.getUserById(userId);
+    const userData = await userService.getUserData(userId, password, user.salt);
+    const emails = userData.emails || [];
+
+    const toIso = (dbValue) => {
+      if (!dbValue) return null;
+      const d = parseDbTimestamp(dbValue);
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    };
+
+    const beneficiaries = [];
+    for (const email of emails) {
+      const addr = email.to || email.address;
+      if (!addr) continue;
+      const ping = await userService.getBeneficiaryPing(
+        userId,
+        hashEmail(addr),
+      );
+      beneficiaries.push({
+        address: addr,
+        pingSentAt: toIso(ping?.ping_sent_at),
+        ackAt: toIso(ping?.ack_at),
+        operatorAlertedAt: toIso(ping?.operator_alerted_at),
+      });
+    }
+
+    res.json({ success: true, beneficiaries });
+  } catch (error) {
+    console.error("Error getting beneficiary status:", error);
+    res.status(500).json({ message: "Failed to get beneficiary status" });
+  }
+});
+
 // Delete email by index (encrypted database)
 router.delete("/emails/:index", authenticateToken, async (req, res) => {
   try {
@@ -1114,6 +1233,20 @@ router.delete("/emails/:index", authenticateToken, async (req, res) => {
       return res.status(404).json({ message: "Email not found" });
     }
 
+    // Never let an armed switch end up with zero recipients — same rationale
+    // as the activation guard: a switch that fires to nobody is worse than
+    // one that refuses the edit.
+    const userEmail = req.user.email;
+    if (
+      existingEmails.length === 1 &&
+      activeDeadmanSwitches.has(userEmail)
+    ) {
+      return res.status(400).json({
+        message:
+          "Cannot delete the last recipient while the switch is armed — deactivate the switch first.",
+      });
+    }
+
     // Remove email at specified index
     existingEmails.splice(emailIndex, 1);
 
@@ -1132,9 +1265,17 @@ router.delete("/emails/:index", authenticateToken, async (req, res) => {
       req.ip,
     );
 
+    // If a switch is armed, the removed beneficiary must stop receiving
+    // anything — propagate immediately
+    const activeSwitchUpdated = await syncActiveSwitchRecipients(
+      userEmail,
+      existingEmails,
+    );
+
     res.json({
       message: "Email deleted successfully",
       remainingCount: existingEmails.length,
+      activeSwitchUpdated,
     });
   } catch (error) {
     console.error("Error deleting email:", error);
@@ -1504,9 +1645,15 @@ router.post("/activate", authenticateToken, async (req, res) => {
     const MAX_TIMEOUT = 2147483647; // Max setTimeout value
 
     if (inactivityMs <= MAX_TIMEOUT) {
-      // Standard setTimeout for periods <= 24.8 days
+      // Standard setTimeout for periods <= 24.8 days.
+      // Recipients are resolved at FIRE time, not captured here — edits made
+      // while the switch is armed (syncActiveSwitchRecipients) must win over
+      // the activation-time snapshot. The /checkin re-arm already does this.
       switchData.deadmanTimer = setTimeout(async () => {
-        await executeDeadmanActivation(userEmail, emails);
+        await executeDeadmanActivation(
+          userEmail,
+          getRecipientsFor(userEmail, switchData),
+        );
       }, inactivityMs);
     } else {
       // For longer periods, use interval checking
@@ -1525,7 +1672,10 @@ router.post("/activate", authenticateToken, async (req, res) => {
         if (timeRemaining <= 0) {
           // Time has expired, trigger deadman
           clearInterval(switchData.deadmanTimer);
-          await executeDeadmanActivation(userEmail, emails);
+          await executeDeadmanActivation(
+            userEmail,
+            getRecipientsFor(userEmail, switchData),
+          );
         }
       }, 60000); // Check every minute for large timeouts
     }
@@ -1568,6 +1718,17 @@ router.post("/activate", authenticateToken, async (req, res) => {
         error,
       );
     }
+
+    // Establish contact with every beneficiary the moment the switch is
+    // armed — never-verified addresses get a first-contact ping now instead
+    // of whenever the daily sweep next runs. Non-blocking: activation must
+    // not fail because a ping could not be sent.
+    processBeneficiaryPings(userId, userEmail, emails).catch((error) =>
+      console.error(
+        `❌ PING: First-contact pass after activation failed for ${userEmail}:`,
+        error,
+      ),
+    );
 
     res.status(200).json({
       success: true,
@@ -2748,6 +2909,26 @@ router.get("/ack/:token", async (req, res) => {
       console.log(
         `🔷 ACK: Annual liveness ping acknowledged for ${ping.email}`,
       );
+      // The row is read before ack_at is stamped, so a null here means this
+      // click is the one that confirmed the cycle — repeat clicks skip the
+      // operator notice. First contact vs annual renewal is distinguished by
+      // whether this row was created for this ping (created_at ≈ ping_sent_at)
+      // or is an old row on a fresh cycle.
+      if (!ping.ack_at) {
+        const firstContact =
+          Math.abs(
+            parseDbTimestamp(ping.ping_sent_at).getTime() -
+              parseDbTimestamp(ping.created_at).getTime(),
+          ) < 120000;
+        emailService
+          .sendPingConfirmedNotice(ping.email, firstContact)
+          .catch((error) =>
+            console.error(
+              `❌ ACK: Ping-confirmed notice to ${ping.email} failed:`,
+              error,
+            ),
+          );
+      }
       return res.send(
         page(
           "Address confirmed — thank you",

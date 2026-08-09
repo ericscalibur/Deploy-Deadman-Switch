@@ -289,8 +289,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       // Email info cell (clickable to edit)
       const emailCell = document.createElement("td");
-      emailCell.textContent = `${index + 1}. ${email.address}`;
       emailCell.className = "email-cell";
+      const addressLine = document.createElement("div");
+      addressLine.textContent = `${index + 1}. ${email.address}`;
+      emailCell.appendChild(addressLine);
+      // Filled in by loadBeneficiaryStatus() once ping data arrives
+      const contactLine = document.createElement("small");
+      contactLine.className = "last-contact";
+      contactLine.dataset.address = email.address || "";
+      emailCell.appendChild(contactLine);
       emailCell.addEventListener("click", () => {
         saveFormSelections();
         window.location.href = `/edit-email.html?index=${index}`;
@@ -350,7 +357,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Refresh the table
         loadEmails();
 
-        alert("Email deleted successfully!");
+        const delData = await response.json().catch(() => ({}));
+        alert(delData.activeSwitchUpdated
+          ? "Email deleted successfully!\n\nYour deadman switch is armed — this recipient has been removed from it and will NOT receive anything when it fires."
+          : "Email deleted successfully!");
       } else {
         const errorData = await response.json();
         alert(
@@ -366,6 +376,48 @@ document.addEventListener("DOMContentLoaded", async () => {
   function loadEmails() {
     const emails = JSON.parse(localStorage.getItem("emails") || "[]");
     populateEmailsTable(emails);
+    loadBeneficiaryStatus();
+  }
+
+  // Annotate each recipient row with its annual-ping contact status.
+  // Ping rows are keyed by address hash server-side; this endpoint maps
+  // them back to readable addresses after decrypting with the password.
+  async function loadBeneficiaryStatus() {
+    const password = localStorage.getItem("userPassword");
+    if (!password) return;
+    try {
+      const response = await fetch("/deadman/beneficiary-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ password }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      for (const b of data.beneficiaries || []) {
+        const el = document.querySelector(
+          `.last-contact[data-address="${CSS.escape(b.address)}"]`,
+        );
+        if (!el) continue;
+        const fmt = (iso) =>
+          new Date(iso).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+        if (b.ackAt) {
+          el.textContent = `Last contact: ${fmt(b.ackAt)}`;
+          el.classList.add("contact-ok");
+        } else if (b.pingSentAt) {
+          el.textContent = `Contact check sent ${fmt(b.pingSentAt)} — awaiting reply`;
+          el.classList.add("contact-pending");
+        } else {
+          el.textContent = "No contact yet — first annual check pending";
+        }
+      }
+    } catch (e) {
+      // Non-critical decoration; leave rows unannotated on failure
+    }
   }
 
   // Load emails from the backend (used on login so Tor Browser session clears don't lose data)
@@ -382,6 +434,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const emails = data.emails || [];
         localStorage.setItem("emails", JSON.stringify(emails));
         populateEmailsTable(emails);
+        loadBeneficiaryStatus();
       } else {
         loadEmails();
       }

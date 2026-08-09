@@ -512,3 +512,19 @@ body {
         flex: none;
     }
 }
+
+/* Per-beneficiary annual-ping contact status (filled by loadBeneficiaryStatus) */
+.last-contact {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.78em;
+    color: #666;
+}
+
+.last-contact.contact-ok {
+    color: #28a745;
+}
+
+.last-contact.contact-pending {
+    color: #b8860b;
+}
