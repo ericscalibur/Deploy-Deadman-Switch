@@ -1,7 +1,12 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.0.12
+version: 2.0.13
 release-notes: |
+  - Fix: QR photos of SeedSigner (and other LCD) screens now decode. The
+    decoder gains an adaptive-threshold pass — a screen's uneven backlight
+    defeats global contrast stretching, so modules are now binarized
+    against their local neighbourhood instead. Verified against a real
+    SeedSigner photo that previously failed every decode attempt.
   - Beneficiary contact is now established the moment a switch is armed:
     every never-verified recipient immediately gets a first-contact email
     introducing the system, with a one-click confirmation link. Previously
