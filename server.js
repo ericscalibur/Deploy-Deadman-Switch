@@ -3,6 +3,14 @@
 require("dotenv").config();
 require("dotenv").config({ path: "/app/data/.env", override: true });
 
+// Prefer IPv4 results from DNS. Node 17+ returns addresses in resolver order,
+// so on a host with IPv6 ULAs (fd00::/8) — which glibc scores as globally
+// routable even when no v6 route to the internet exists — an AAAA record for
+// smtp.gmail.com wins and every SMTP connection fails (EAI_AGAIN / timeout)
+// while DNS looks perfectly healthy. Seen live on a Start9 node 2026-09-03.
+// This must run before anything opens a socket. See docs/deployment-notes.md.
+require("node:dns").setDefaultResultOrder("ipv4first");
+
 const express = require("express");
 const https = require("https");
 const http = require("http");
@@ -121,6 +129,9 @@ function applyConfigToEnv(config) {
     trigger_smtp_user: "TRIGGER_SMTP_USER",
     trigger_smtp_password: "TRIGGER_SMTP_PASS",
     warning_missed_checkins: "WARNING_MISSED_CHECKINS",
+    // v2.1.0 — out-of-band operator alerting (utils/notify.js)
+    ntfy_topic: "NTFY_TOPIC",
+    ntfy_server: "NTFY_SERVER",
   };
   for (const [cfgKey, envKey] of Object.entries(map)) {
     const val = config[cfgKey];
@@ -173,6 +184,17 @@ function isLocalhost(req) {
   await initializeDatabase();
 
   await loadConfigFromDB();
+
+  // Out-of-band alerting status: say it loudly at startup either way, so a
+  // node with no ntfy topic knows it is flying without the independent
+  // alarm channel (see utils/notify.js).
+  if (process.env.NTFY_TOPIC && process.env.NTFY_TOPIC.trim()) {
+    console.log("✅ ntfy out-of-band alerting enabled");
+  } else {
+    console.warn(
+      "⚠️ NTFY_TOPIC not set — out-of-band alerts are DISABLED. If email breaks, nothing can tell you.",
+    );
+  }
 
   const deadmanRoutes = require("./routes/deadman");
   app.use("/deadman", deadmanRoutes);

@@ -1,8 +1,25 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.0.13
+version: 2.1.0
 release-notes: |
-  - Fix: QR photos of SeedSigner (and other LCD) screens now decode. The
+  - Arming now requires completing the first check-in. Deploying a switch
+    holds it in PENDING: the first check-in email is sent immediately, and
+    only clicking its link arms the switch and starts the countdown —
+    proving the whole loop (email delivery, link reachability over Tor,
+    check-in handling) before anything can fire. A pending switch cannot
+    fire or escalate, re-sends its arming email every check-in interval,
+    and survives restarts.
+  - Out-of-band alerts via ntfy push notifications (new config fields
+    "ntfy Alert Topic" / "ntfy Server"). Deploy can now tell you it is sick
+    over a channel independent of email and Tor: broken SMTP (and
+    recovery), check-in emails that could not be sent, missed check-ins,
+    the pre-fire warning, the switch firing, delivery failures, and
+    unresponsive recipient addresses. Leave the topic empty to disable.
+  - Fix: outbound SMTP no longer breaks silently on networks that hand out
+    IPv6 addresses with no working IPv6 route (DNS resolution now prefers
+    IPv4). Previously email could fail at startup with EAI_AGAIN while DNS
+    looked healthy.
+  - (2.0.13) Fix: QR photos of SeedSigner (and other LCD) screens now decode. The
     decoder gains an adaptive-threshold pass — a screen's uneven backlight
     defeats global contrast stretching, so modules are now binarized
     against their local neighbourhood instead. Verified against a real

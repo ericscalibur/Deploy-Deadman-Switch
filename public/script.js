@@ -210,7 +210,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       "Are you sure you want to deploy the Deadman Switch?\n\n" +
         `• Check-in emails will be sent every ${formatInterval(savedFormData.checkinInterval)}\n` +
         `• If you don't respond for ${formatInterval(savedFormData.inactivityPeriod)}, your ${emails.length} configured email(s) will be sent\n\n` +
-        "This will start immediately. Continue?",
+        "The countdown does NOT start yet: you'll get a check-in email right away, and clicking its link arms the switch. Continue?",
     );
 
     if (!confirmed) return;
@@ -236,10 +236,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (response.ok) {
         const data = await response.json();
         alert(
-          "Deadman Switch deployed successfully! Check-in emails will begin shortly.",
+          data.message ||
+            "Switch deployed and PENDING. Click the link in the check-in email just sent to you to arm it and start the countdown.",
         );
-        // Set activation flag and restart timers with fresh data
+        // Set activation flag and restart timers with fresh data. The
+        // switch is pending until the first check-in email link is clicked.
         deadmanSwitchActivated = true;
+        deadmanSwitchPending = data.pending !== false;
         localStorage.setItem("deadmanSwitchActivated", "true");
         logActivity();
         await startCountdownTimers();
@@ -496,6 +499,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   let deadmanActivationTime = null;
   let lastActivityTime = new Date();
   let deadmanSwitchActivated = false;
+  // Deployed but not yet armed: the backend holds the switch with no
+  // countdown until the operator completes the first check-in email.
+  let deadmanSwitchPending = false;
 
   // Function to get interval in milliseconds based on user selection
   function getIntervalMs(intervalValue) {
@@ -569,7 +575,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Update check-in countdown
     const checkinElement = document.getElementById("checkin-countdown");
     if (checkinElement) {
-      if (!deadmanSwitchActivated || !nextCheckinTime) {
+      if (deadmanSwitchPending) {
+        checkinElement.textContent = "PENDING";
+      } else if (!deadmanSwitchActivated || !nextCheckinTime) {
         checkinElement.textContent = "00:00:00";
       } else {
         const timeLeft = nextCheckinTime - now;
@@ -585,7 +593,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Update deadman countdown
     const deadmanElement = document.getElementById("deadman-countdown");
     if (deadmanElement) {
-      if (!deadmanSwitchActivated || !deadmanActivationTime) {
+      if (deadmanSwitchPending) {
+        deadmanElement.textContent = "NOT ARMED";
+      } else if (!deadmanSwitchActivated || !deadmanActivationTime) {
         deadmanElement.textContent = "00:00:00";
       } else {
         const timeLeft = deadmanActivationTime - now;
@@ -601,7 +611,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Update last activity display
     const lastActivityElement = document.getElementById("last-activity");
     if (lastActivityElement) {
-      if (!deadmanSwitchActivated) {
+      if (deadmanSwitchPending) {
+        lastActivityElement.textContent =
+          "Awaiting your first check-in — click the link in the email just sent to you to arm the switch";
+      } else if (!deadmanSwitchActivated) {
         lastActivityElement.textContent = "Not deployed";
       } else {
         lastActivityElement.textContent = lastActivityTime.toLocaleString();
@@ -625,6 +638,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (data.active) {
           // Update frontend with backend data
           deadmanSwitchActivated = true;
+          deadmanSwitchPending = !!data.pending;
           lastActivityTime = new Date(data.lastActivity);
 
           // Use absolute timestamps from backend data
@@ -651,6 +665,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           updateButtonState("active");
         } else {
           // No active deadman switch on backend - check if it was triggered
+          deadmanSwitchPending = false;
           await checkDeadmanStatus();
           // If deadman was triggered, we need to reload emails after localStorage clear
           if (!deadmanSwitchActivated) {
@@ -710,8 +725,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     await syncWithBackend();
 
     // Only calculate times if deadman switch is activated and backend sync failed
+    // (never for a pending switch — it genuinely has no countdown yet)
     if (
       deadmanSwitchActivated &&
+      !deadmanSwitchPending &&
       (!nextCheckinTime || !deadmanActivationTime)
     ) {
       calculateNextCheckin();
@@ -1031,6 +1048,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         alert("Deadman Switch deactivated successfully!");
         // Reset local state
         deadmanSwitchActivated = false;
+        deadmanSwitchPending = false;
         localStorage.removeItem("deadmanSwitchActivated");
         localStorage.removeItem("lastActivity");
 

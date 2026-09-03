@@ -1,5 +1,11 @@
 const nodemailer = require("nodemailer");
 const QRCode = require("qrcode");
+const { notify, notifyThrottled, clearThrottle } = require("./notify");
+
+// Repeated-failure alert cadence: init retries once a minute and check-in
+// sends recur per interval, so out-of-band alerts are capped to one per
+// issue per hour to stay meaningful.
+const NTFY_REPEAT_MS = 60 * 60 * 1000;
 
 // Subject-line severity coding (Issue #4): plain words, never emoji — emoji
 // in subjects is the signature of marketing mail and is exactly what spam
@@ -180,6 +186,14 @@ class EmailService {
       this.initialized = true;
       console.log("✅ Primary email transporter verified");
 
+      if (this._smtpDownAlerted) {
+        this._smtpDownAlerted = false;
+        clearThrottle("smtp-init-failed");
+        notify("Email service recovered — SMTP transporter verified.", {
+          tags: "white_check_mark,email",
+        });
+      }
+
       // Init backup transporter if configured (non-blocking)
       const backup = this._buildBackupTransport();
       if (backup) {
@@ -225,6 +239,18 @@ class EmailService {
         }
       } else {
         this.initialized = false;
+      }
+
+      if (!this.initialized) {
+        this._smtpDownAlerted = true;
+        notifyThrottled(
+          "smtp-init-failed",
+          NTFY_REPEAT_MS,
+          `Email transporter failed verification: ${error.message}. ` +
+            "No check-in, warning, or trigger emails can be sent until this is fixed. " +
+            "The server keeps retrying every minute.",
+          { priority: "urgent", tags: "rotating_light,email" },
+        );
       }
     }
   }
@@ -284,11 +310,25 @@ class EmailService {
     return this._sendWithFallback(mailOptions);
   }
 
+  // A failed check-in email is the false-fire failure mode: the operator
+  // cannot answer a question they never received, and the timer counts on
+  // regardless. It gets its own out-of-band alert, per operator.
+  _alertCheckinSendFailure(userEmail, reason) {
+    notifyThrottled(
+      `checkin-send-failed:${userEmail}`,
+      NTFY_REPEAT_MS,
+      `Check-in email to ${userEmail} could NOT be sent (${reason}). ` +
+        "The countdown continues — if this persists the switch could fire on a living operator.",
+      { priority: "urgent", tags: "rotating_light,hourglass" },
+    );
+  }
+
   async sendCheckinEmail(userEmail, checkinToken, missedCheckins = 0) {
     if (!(await this.ensureReady())) {
       console.error(
         `❌ Email service not initialized — check-in email to ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
       );
+      this._alertCheckinSendFailure(userEmail, "email service not initialized");
       return false;
     }
 
@@ -350,9 +390,81 @@ This is an automated message from Deploy Deadman Switch.
 
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(`✅ Check-in email sent successfully to ${userEmail}`, info.messageId);
+      clearThrottle(`checkin-send-failed:${userEmail}`);
       return true;
     } catch (error) {
       console.error(`❌ Failed to send check-in email to ${userEmail}:`, error);
+      this._alertCheckinSendFailure(userEmail, error.message);
+      return false;
+    }
+  }
+
+  // First check-in email of an armed-but-pending switch (and its reminders).
+  // The switch holds in pending until this link is clicked: completing the
+  // check-in proves the whole loop — email arrives, link opens, server
+  // reachable, token accepted — before anything is allowed to count down.
+  async sendArmingCheckinEmail(userEmail, checkinToken, isReminder = false) {
+    if (!(await this.ensureReady())) {
+      console.error(
+        `❌ Email service not initialized — arming check-in email to ${userEmail} NOT sent.`,
+      );
+      this._alertCheckinSendFailure(userEmail, "email service not initialized");
+      return false;
+    }
+
+    try {
+      const checkinUrl = `${process.env.APP_URL || "http://localhost:3000"}/deadman/checkin/${checkinToken}`;
+      const subject = isReminder
+        ? "URGENT: Deploy switch is still NOT armed — confirm your first check-in"
+        : "Confirm your first check-in to arm your Deploy switch";
+
+      const mailOptions = {
+        from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+        to: userEmail,
+        subject,
+        html: `
+          <h2>Your switch is pending — not armed yet</h2>
+          <p>You just deployed your Deploy Deadman Switch, but the countdown
+          has <strong>not started</strong>. It starts only when you complete
+          this first check-in, which proves the whole loop works: this email
+          reached you, the link opens, and your check-in registers.</p>
+          <p><strong>Click the link below to arm the switch:</strong></p>
+          <p><a href="${checkinUrl}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Arm My Switch - Start Countdown</a></p>
+          <p>Or copy and paste this URL into your browser:</p>
+          <p><code>${checkinUrl}</code></p>
+          <hr>
+          <p><small>Until you click, no timers run and nothing will ever be
+          sent to your recipients. You will be reminded until the switch is
+          armed.</small></p>
+          <p><small>This is an automated message from Deploy Deadman Switch.</small></p>
+        `,
+        text: `
+Your switch is pending — not armed yet
+
+You just deployed your Deploy Deadman Switch, but the countdown has NOT started. It starts only when you complete this first check-in, which proves the whole loop works: this email reached you, the link opens, and your check-in registers.
+
+Click the link below to arm the switch:
+${checkinUrl}
+
+Until you click, no timers run and nothing will ever be sent to your recipients. You will be reminded until the switch is armed.
+
+This is an automated message from Deploy Deadman Switch.
+        `,
+      };
+
+      const { info } = await this._sendWithFallback(mailOptions);
+      console.log(
+        `✅ Arming check-in email ${isReminder ? "(reminder) " : ""}sent to ${userEmail}`,
+        info.messageId,
+      );
+      clearThrottle(`checkin-send-failed:${userEmail}`);
+      return true;
+    } catch (error) {
+      console.error(
+        `❌ Failed to send arming check-in email to ${userEmail}:`,
+        error,
+      );
+      this._alertCheckinSendFailure(userEmail, error.message);
       return false;
     }
   }

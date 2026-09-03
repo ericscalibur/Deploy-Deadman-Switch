@@ -19,6 +19,7 @@ const {
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,
 } = require("../utils/escalation");
+const { notify, notifyThrottled } = require("../utils/notify");
 
 // Beneficiary escalation configuration (Issues #1/#2). Defaults follow the
 // modification spec: warning after 5 consecutive check-in intervals of
@@ -133,13 +134,53 @@ async function recoverActiveDeadmanSwitches() {
         const deadmanExpiry = parseDbTimestamp(session.expires_at).getTime();
         const timeRemaining = deadmanExpiry - now;
 
-        // A session with no valid deadline was never fully activated (e.g. a
-        // crash between session creation and saving the timer state). Skip it
-        // rather than treating epoch-0 as "expired" and firing spuriously.
+        // A session with no deadline was never armed: the operator deployed
+        // but has not completed the first check-in (or the server crashed
+        // mid-activation, which leaves the same state). Restore the PENDING
+        // switch — resume arming reminders, no countdown — rather than
+        // treating epoch-0 as "expired" and firing spuriously, and rather
+        // than silently forgetting the switch existed.
         if (!session.expires_at || Number.isNaN(deadmanExpiry)) {
-          console.warn(
-            `⚠️ RECOVERY: Session for ${session.email} has no valid deadline (never fully activated); skipping`,
+          let pendingEmails = [];
+          if (session.server_encrypted_emails) {
+            try {
+              pendingEmails = cryptoUtils.decryptEmailsWithServerKey(
+                session.server_encrypted_emails,
+              );
+            } catch (decryptErr) {
+              console.error(
+                `❌ RECOVERY: Failed to decrypt envelope for pending switch of ${session.email}:`,
+                decryptErr.message,
+              );
+            }
+          }
+          if (pendingEmails.length > 0) {
+            userEmails.set(session.email, pendingEmails);
+          }
+          const pendingSwitch = {
+            userEmail: session.email,
+            userId: session.user_id,
+            sessionToken: session.session_token,
+            settings: {
+              checkinInterval: getIntervalName(checkinIntervalMs),
+              inactivityPeriod: getInactivityName(inactivityMs),
+              emails: pendingEmails,
+            },
+            lastActivity: parseDbTimestamp(session.last_activity),
+            checkinTimer: null,
+            deadmanTimer: null,
+            recovered: true,
+          };
+          startPendingReminders(
+            session.email,
+            pendingSwitch,
+            checkinIntervalMs,
           );
+          activeDeadmanSwitches.set(session.email, pendingSwitch);
+          console.log(
+            `⏳ RECOVERY: Restored PENDING switch for ${session.email} — awaiting first check-in, no countdown running`,
+          );
+          await sendArmingCheckin(session.email, pendingSwitch, true);
           continue;
         }
 
@@ -371,6 +412,12 @@ async function recoverActiveDeadmanSwitches() {
 // server-recoverable envelope existed). We deliberately do NOT close the switch
 // so it keeps retrying/alerting rather than failing silently.
 async function alertUnrecoverableSwitch(userEmail) {
+  notifyThrottled(
+    `unrecoverable:${userEmail}`,
+    60 * 60 * 1000,
+    `Switch for ${userEmail} reached its deadline but the recipient list could not be recovered — nothing was delivered. Log in to Deploy and re-arm the switch.`,
+    { priority: "urgent", tags: "rotating_light,x" },
+  );
   try {
     const subject = "WARNING: Your Deadman Switch could not deliver — action needed";
     const html = `
@@ -391,6 +438,72 @@ async function alertUnrecoverableSwitch(userEmail) {
       error,
     );
   }
+}
+
+// ---- Pending arming (verify the check-in loop before counting down) ----
+//
+// "No check-in received" and "operator is dead" are only the same thing if
+// the check-in channel is known to work. A newly deployed switch therefore
+// holds in PENDING: the first check-in email goes out immediately, and no
+// countdown exists until the operator completes it — proving email delivery,
+// link reachability (Tor included), and token handling end to end. A pending
+// switch cannot fire, cannot escalate, and re-sends its arming email every
+// check-in interval until answered.
+//
+// Persistence: a pending session is simply an active session whose
+// expires_at is NULL (no deadline was ever set). This is backward
+// compatible — every previously armed session has expires_at, and the old
+// recovery behavior for NULL ("never fully activated, skip") is replaced by
+// restoring the pending state.
+
+async function sendArmingCheckin(userEmail, switchData, isReminder) {
+  const checkinToken = crypto.randomBytes(32).toString("hex");
+  checkinTokens.set(checkinToken, userEmail);
+  const sent = await emailService.sendArmingCheckinEmail(
+    userEmail,
+    checkinToken,
+    isReminder,
+  );
+  if (!sent) {
+    console.error(
+      `❌ PENDING: Arming check-in email to ${userEmail} could not be sent — switch stays pending`,
+    );
+  }
+  return sent;
+}
+
+// The reminder interval reuses switchData.checkinTimer so every existing
+// teardown path (deactivate, fire, debug clears) stops it without changes.
+function startPendingReminders(userEmail, switchData, checkinIntervalMs) {
+  switchData.pending = true;
+  switchData.nextCheckin = null;
+  switchData.deadmanActivation = null;
+  switchData.deadmanTimer = null;
+
+  switchData.checkinTimer = setInterval(async () => {
+    try {
+      const current = activeDeadmanSwitches.get(userEmail);
+      if (!current || !current.pending) {
+        clearInterval(switchData.checkinTimer);
+        return;
+      }
+      console.log(
+        `⏳ PENDING: ${userEmail} has not completed the arming check-in — re-sending`,
+      );
+      await sendArmingCheckin(userEmail, switchData, true);
+      notifyThrottled(
+        `pending-unarmed:${userEmail}`,
+        Math.max(checkinIntervalMs, 60 * 60 * 1000),
+        `Switch for ${userEmail} is deployed but still NOT armed — the first check-in has not been completed. No countdown is running.`,
+        { priority: "high", tags: "warning,hourglass" },
+      );
+    } catch (error) {
+      console.error(
+        `❌ PENDING: Reminder cycle failed for ${userEmail}:`,
+        error,
+      );
+    }
+  }, checkinIntervalMs);
 }
 
 // ---- Beneficiary escalation (Issues #1/#2) ----
@@ -508,6 +621,12 @@ async function sendPreFireWarning(userEmail, switchData) {
     console.log(
       `🔶 PRE-FIRE WARNING: ${isResend ? "Re-sent" : "Sent"} to ${recipients.length} recipient(s) for ${userEmail} (~${daysRemaining} days to fire)`,
     );
+    if (!isResend) {
+      notify(
+        `Pre-fire warning sent to your ${recipients.length} recipient(s) — ${userEmail} has missed ${switchData.missedCheckins} check-ins, ~${daysRemaining} days until the switch fires. Check in NOW if you are alive.`,
+        { priority: "urgent", tags: "rotating_light,hourglass" },
+      );
+    }
   } catch (error) {
     console.error(
       `❌ PRE-FIRE WARNING: Failed to send for ${userEmail}:`,
@@ -536,6 +655,27 @@ async function registerMissedCheckin(userEmail, switchData) {
         error,
       );
     }
+  }
+
+  // Out-of-band nudge from the second consecutive miss: one missed interval
+  // is normal latency, two starts to look like the operator isn't receiving
+  // check-ins at all — exactly the condition email cannot report on itself.
+  if (switchData.missedCheckins >= 2) {
+    const remaining = switchData.deadmanActivation
+      ? Math.max(0, Math.round((switchData.deadmanActivation - Date.now()) / 3600000))
+      : null;
+    notify(
+      `${userEmail} has missed ${switchData.missedCheckins} consecutive check-ins` +
+        (remaining !== null ? ` — about ${remaining}h until the switch fires.` : ".") +
+        " If you are seeing this and are fine, check in now.",
+      {
+        priority:
+          switchData.missedCheckins >= WARNING_MISSED_CHECKINS
+            ? "urgent"
+            : "high",
+        tags: "warning,hourglass",
+      },
+    );
   }
 
   const action = warningAction({
@@ -692,6 +832,10 @@ async function processBeneficiaryPings(userId, operatorEmail, recipients) {
         console.log(
           `🔶 PING: Operator ${operatorEmail} alerted about unresponsive recipient`,
         );
+        notify(
+          `A recipient of ${operatorEmail}'s switch has not answered the address check for over ${graceDays} days — that address may be dead. Review your recipient list in Deploy.`,
+          { priority: "high", tags: "warning,mailbox_with_no_mail" },
+        );
       }
     }
   }
@@ -726,6 +870,10 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
     console.log(
       `✅ DEADMAN DELIVERY: Emails delivered for ${userEmail} (attempt ${attempt})`,
     );
+    notify(
+      `Deadman switch FIRED for ${userEmail} — trigger emails delivered to the recipients (attempt ${attempt}). The switch is now closed.`,
+      { priority: "urgent", tags: "rotating_light,email" },
+    );
     if (sessionToken) {
       try {
         await userService.markSessionTriggered(sessionToken);
@@ -741,6 +889,12 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
 
   console.error(
     `❌ DEADMAN DELIVERY: Attempt ${attempt} failed for ${userEmail} — session stays active, retrying in ${DEADMAN_RETRY_MS / 60000} minutes`,
+  );
+  notifyThrottled(
+    `deadman-delivery-failed:${userEmail}`,
+    60 * 60 * 1000,
+    `Deadman switch for ${userEmail} FIRED but delivery FAILED (attempt ${attempt}) — no recipient has received the trigger email. Retrying every ${DEADMAN_RETRY_MS / 60000} minutes. Check the SMTP configuration.`,
+    { priority: "urgent", tags: "rotating_light,x" },
   );
   if (attempt === 1) {
     try {
@@ -832,7 +986,14 @@ setInterval(async () => {
 
     for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
       try {
-        if (!switchData.recovered && switchData.userId) {
+        // Pending switches are excluded: they have no deadline, and writing
+        // one (epoch-0 from a null deadmanActivation) would both corrupt the
+        // schedule and destroy the expires_at-IS-NULL pending marker.
+        if (
+          !switchData.recovered &&
+          !switchData.pending &&
+          switchData.userId
+        ) {
           await userService.saveTimerState(switchData.userId, {
             nextCheckin: switchData.nextCheckin,
             deadmanActivation: switchData.deadmanActivation,
@@ -843,6 +1004,12 @@ setInterval(async () => {
         console.error(
           `❌ PERIODIC SAVE: Failed to save state for ${userEmail}:`,
           error,
+        );
+        notifyThrottled(
+          "periodic-save-failed",
+          60 * 60 * 1000,
+          `Periodic timer-state save failed for ${userEmail}: ${error.message}. A restart could resume from stale state.`,
+          { priority: "high", tags: "warning,floppy_disk" },
         );
       }
     }
@@ -1329,6 +1496,9 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
       res.json({
         success: true,
         active: true,
+        // Pending: deployed but not yet armed — nextCheckin/deadmanActivation
+        // are null and no countdown exists until the first check-in completes.
+        pending: !!switchData.pending,
         lastActivity: switchData.lastActivity,
         nextCheckin: switchData.nextCheckin,
         deadmanActivation: switchData.deadmanActivation,
@@ -1500,8 +1670,10 @@ router.post("/activate", authenticateToken, async (req, res) => {
       checkinTokens: userData.checkinTokens || {},
     });
 
-    // Store the deadman switch data in memory for active timers
-    const now = Date.now();
+    // Store the deadman switch data in memory. The switch starts PENDING:
+    // no countdown exists until the operator completes the first check-in
+    // (see the pending-arming section above) — deploying is the dry run
+    // that proves the check-in loop before anything is allowed to fire.
     const switchData = {
       userEmail,
       userId,
@@ -1513,8 +1685,9 @@ router.post("/activate", authenticateToken, async (req, res) => {
         emails,
       },
       lastActivity: new Date(),
-      nextCheckin: now + checkinIntervalMs,
-      deadmanActivation: now + inactivityMs,
+      pending: true,
+      nextCheckin: null,
+      deadmanActivation: null,
       checkinTimer: null,
       deadmanTimer: null,
     };
@@ -1525,160 +1698,11 @@ router.post("/activate", authenticateToken, async (req, res) => {
       console.log(`📧 DEBUG: Email ${i + 1}: ${email.to || email.address}`);
     });
 
-    // Set up check-in timer
-    console.log(
-      `⏰ DEBUG: Setting up check-in timer for ${userEmail} with interval ${checkinIntervalMs}ms`,
-    );
-    switchData.checkinTimer = setInterval(async () => {
-      try {
-        console.log(
-          `🔍 PERIODIC CHECK-IN: Timer fired for ${userEmail} at ${new Date().toISOString()}`,
-        );
-
-        // Safety check: Don't send check-in emails if deadman switch is no longer active
-        if (!activeDeadmanSwitches.has(userEmail)) {
-          console.log(
-            `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${userEmail}, stopping timer`,
-          );
-          clearInterval(switchData.checkinTimer);
-          return;
-        }
-
-        // Verify switchData still exists
-        const currentSwitchData = activeDeadmanSwitches.get(userEmail);
-        if (!currentSwitchData) {
-          console.error(
-            `❌ PERIODIC CHECK-IN: Switch data missing for ${userEmail}, stopping timer`,
-          );
-          clearInterval(switchData.checkinTimer);
-          return;
-        }
-
-        console.log(
-          `✅ PERIODIC CHECK-IN: Switch data verified for ${userEmail}`,
-        );
-
-        // Generate unique check-in token
-        const checkinToken = crypto.randomBytes(32).toString("hex");
-        checkinTokens.set(checkinToken, userEmail);
-
-        // Update session activity in database
-        if (sessionData && sessionData.sessionToken) {
-          try {
-            await userService.updateSessionActivity(sessionData.sessionToken);
-            console.log(
-              `📝 PERIODIC CHECK-IN: Database session updated for ${userEmail}`,
-            );
-          } catch (error) {
-            console.error(
-              `Failed to update session activity during periodic check-in for ${userEmail}:`,
-              error,
-            );
-          }
-        }
-
-        // The deadman deadline has passed: the switch is firing (or already
-        // fired and is tearing down). A check-in email sent now is a dead
-        // link into a closed switch — skip it and let the fire path finish.
-        if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
-          console.log(
-            `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
-          );
-          return;
-        }
-
-        console.log(`📧 PERIODIC CHECK-IN: Sending email to ${userEmail}`);
-
-        // Send actual check-in email (non-blocking)
-        console.log(
-          `📧 DEBUG: About to call sendCheckinEmail for ${userEmail}`,
-        );
-        console.log(`📧 DEBUG: Check-in token: ${checkinToken}`);
-        console.log(`📧 DEBUG: emailService available: ${!!emailService}`);
-
-        const missedCount = await registerMissedCheckin(userEmail, switchData);
-
-        emailService
-          .sendCheckinEmail(userEmail, checkinToken, missedCount)
-          .then((emailSent) => {
-            if (!emailSent) {
-              console.error(
-                `❌ PERIODIC CHECK-IN: Failed to send check-in email to ${userEmail}`,
-              );
-            } else {
-              console.log(
-                `✅ PERIODIC CHECK-IN: Email sent successfully to ${userEmail}`,
-              );
-              console.log(
-                `📧 DEBUG: Email sent at ${new Date().toISOString()}`,
-              );
-            }
-          })
-          .catch((error) => {
-            console.error(
-              `❌ PERIODIC CHECK-IN: Error sending check-in email to ${userEmail}:`,
-              error,
-            );
-          });
-
-        // Update next check-in time
-        const nextCheckinNow = Date.now();
-        switchData.nextCheckinTime = new Date(
-          nextCheckinNow + checkinIntervalMs,
-        );
-        switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-        // Deadman activation time should NOT be reset here
-        console.log(
-          `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, next check-in in ${checkinIntervalMs / 1000 / 60} minutes`,
-        );
-      } catch (error) {
-        console.error(
-          `❌ PERIODIC CHECK-IN: Critical error in timer callback for ${userEmail}:`,
-          error,
-        );
-        // Don't clear the timer on error, let it retry next time
-      }
-    }, checkinIntervalMs);
-
-    // Set up deadman timer with support for large timeout values
-    // JavaScript setTimeout has a maximum delay of ~24.8 days (2,147,483,647 ms)
-    const MAX_TIMEOUT = 2147483647; // Max setTimeout value
-
-    if (inactivityMs <= MAX_TIMEOUT) {
-      // Standard setTimeout for periods <= 24.8 days.
-      // Recipients are resolved at FIRE time, not captured here — edits made
-      // while the switch is armed (syncActiveSwitchRecipients) must win over
-      // the activation-time snapshot. The /checkin re-arm already does this.
-      switchData.deadmanTimer = setTimeout(async () => {
-        await executeDeadmanActivation(
-          userEmail,
-          getRecipientsFor(userEmail, switchData),
-        );
-      }, inactivityMs);
-    } else {
-      // For longer periods, use interval checking
-      console.log(
-        `⚠️ LARGE TIMEOUT: Using interval checking for ${userEmail} (${inactivityMs}ms > ${MAX_TIMEOUT}ms)`,
-      );
-
-      switchData.deadmanTimer = setInterval(async () => {
-        const now = Date.now();
-        const timeRemaining = switchData.deadmanActivation - now;
-
-        console.log(
-          `🔍 LARGE TIMEOUT CHECK: ${userEmail} - ${timeRemaining}ms remaining`,
-        );
-
-        if (timeRemaining <= 0) {
-          // Time has expired, trigger deadman
-          clearInterval(switchData.deadmanTimer);
-          await executeDeadmanActivation(
-            userEmail,
-            getRecipientsFor(userEmail, switchData),
-          );
-        }
-      }, 60000); // Check every minute for large timeouts
-    }
+    // No countdown timers yet — the switch holds in pending, re-sending the
+    // arming email each interval. The real timers are created in /checkin
+    // when the operator completes this first check-in (that handler already
+    // rebuilds both timers from scratch on every check-in).
+    startPendingReminders(userEmail, switchData, checkinIntervalMs);
 
     // Store the active switch
     activeDeadmanSwitches.set(userEmail, switchData);
@@ -1686,20 +1710,9 @@ router.post("/activate", authenticateToken, async (req, res) => {
     // Store emails in memory for deadman activation
     userEmails.set(userEmail, emails);
 
-    // Save timer state to database for persistence
-    try {
-      await userService.saveTimerState(userId, {
-        nextCheckin: switchData.nextCheckin,
-        deadmanActivation: switchData.deadmanActivation,
-        lastActivity: switchData.lastActivity,
-      });
-      console.log(`💾 PERSISTENCE: Timer state saved for ${userEmail}`);
-    } catch (error) {
-      console.error(
-        `❌ PERSISTENCE: Failed to save timer state for ${userEmail}:`,
-        error,
-      );
-    }
+    // No timer-state save here: a pending session keeps expires_at NULL —
+    // that IS the persisted pending marker. /checkin writes the first real
+    // deadline when the switch arms.
 
     // Persist a SECRET_KEY-encrypted copy of the delivery envelope so the switch
     // can fire after a restart even without the user's password (see recovery).
@@ -1730,9 +1743,22 @@ router.post("/activate", authenticateToken, async (req, res) => {
       ),
     );
 
+    // Arming dry run: the first check-in email goes out right now. Awaited
+    // so the response can say honestly whether it was sent — if it wasn't,
+    // the switch still holds safely in pending and the reminder cycle (plus
+    // ntfy) keeps pushing until the loop is proven.
+    const armingEmailSent = await sendArmingCheckin(userEmail, switchData, false);
+    console.log(
+      `⏳ PENDING: Switch deployed for ${userEmail} — awaiting first check-in to arm (email sent: ${armingEmailSent})`,
+    );
+
     res.status(200).json({
       success: true,
-      message: "Deadman switch activated successfully",
+      pending: true,
+      armingEmailSent,
+      message: armingEmailSent
+        ? "Switch deployed and PENDING. A check-in email was just sent to you — click its link to arm the switch and start the countdown."
+        : "Switch deployed and PENDING, but the first check-in email could not be sent yet. The server will keep retrying; the countdown will not start until you complete a check-in.",
       settings: {
         checkinIntervalMinutes: checkinIntervalMs / 1000 / 60,
         deadmanTimerMinutes: inactivityMs / 1000 / 60,
@@ -2620,12 +2646,20 @@ router.get("/checkin/:token", async (req, res) => {
     // check-in, leaving the old expires_at in the DB until the next periodic
     // save (or forever, for recovered switches the periodic save skips).
     let switchData = null;
+    let wasPending = false;
     if (activeDeadmanSwitches.has(userEmail)) {
       switchData = activeDeadmanSwitches.get(userEmail);
       switchData.lastActivity = new Date();
       // A successful check-in fully re-establishes the switch state, so a
       // switch recovered after a restart can rejoin the periodic save loop.
       switchData.recovered = false;
+
+      // Completing the first check-in of a pending switch is the arming
+      // event: the whole loop just proved itself (email delivered, link
+      // reachable, token accepted), so the countdown may now exist. The
+      // timer rebuild below is the same for arming and for a routine reset.
+      wasPending = !!switchData.pending;
+      switchData.pending = false;
 
       // Proof of life: reset the missed-check-in escalation, and stand the
       // beneficiaries down if a pre-fire warning had already gone out.
@@ -2812,9 +2846,19 @@ router.get("/checkin/:token", async (req, res) => {
 
     // Remove used token
     checkinTokens.delete(token);
-    console.log(
-      `🎯 CHECK-IN COMPLETE: Both timers successfully reset for ${userEmail}`,
-    );
+    if (wasPending) {
+      console.log(
+        `🟢 ARMED: First check-in completed for ${userEmail} — countdown started`,
+      );
+      notify(
+        `Switch ARMED for ${userEmail} — first check-in completed, the whole loop is verified and the countdown is now running.`,
+        { tags: "white_check_mark,shield" },
+      );
+    } else {
+      console.log(
+        `🎯 CHECK-IN COMPLETE: Both timers successfully reset for ${userEmail}`,
+      );
+    }
 
     // Save updated timer state to database for persistence
     if (switchData) {
@@ -2839,9 +2883,17 @@ router.get("/checkin/:token", async (req, res) => {
     res.send(`
       <html>
         <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h2>✅ Check-In Successful!</h2>
+          ${
+            wasPending
+              ? `<h2>🟢 Switch Armed!</h2>
+          <p>Your first check-in is complete — the whole loop is verified:
+          the email reached you, the link opened, and your check-in registered.</p>
+          <p><strong>The countdown is now running.</strong> You'll receive
+          check-in emails at your configured interval.</p>`
+              : `<h2>✅ Check-In Successful!</h2>
           <p>Thank you for checking in.</p>
-          <p>Your deadman switch timer has been reset.</p>
+          <p>Your deadman switch timer has been reset.</p>`
+          }
           <p>Last activity: ${new Date().toLocaleString()}</p>
           <hr>
           <p><small>You can close this window now.</small></p>

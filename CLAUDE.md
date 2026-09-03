@@ -49,6 +49,7 @@ utils/
   timeUtils.js             # Pure functions: ms↔interval conversion and validation
   emailService.js          # Nodemailer wrapper; Gmail SMTP or custom SMTP; optional dedicated trigger sender
   escalation.js            # Pure decision logic: pre-fire warning + annual liveness ping timing
+  notify.js                # Out-of-band operator alerts via ntfy (NTFY_TOPIC unset → disabled)
 public/                    # Vanilla JS/HTML/CSS frontend (no build step)
 tests/
   timeUtils.test.js        # Unit tests for time utilities
@@ -66,10 +67,13 @@ start9/                    # Packaging scripts for Start9 OS deployment
 - **Beneficiary escalation (v2.0.0)**: after `WARNING_MISSED_CHECKINS` consecutive check-in intervals of operator silence (default 5), recipients get a pre-fire warning with an ack link (`/deadman/ack/:token`); unacknowledged warnings re-send each interval. A daily sweep sends annual liveness pings to recipients (addresses stored only as SHA-256 hashes in `beneficiary_pings`) and alerts the operator when a ping goes unanswered past the grace window. Escalation state lives in `deadman_sessions` columns and survives restarts.
 - **Trigger email carries the payload, not the manual**: the encrypted payload (and its QR) ride in the email itself, but decryption instructions are links to the Legacy site — the decrypt page, the downloadable offline copy, and the full reimplementation spec in FAQ item 10 of the Legacy_Encryption repo (the former `utils/recoverySpec.js` content moved there in v2.0.10). It sends from a dedicated sender when `TRIGGER_EMAIL_*`/`TRIGGER_SMTP_*` are configured, with the subject prefixed `CRITICAL:` — subjects use plain severity words, never emoji.
 
+- **Arming requires the first check-in (v2.1.0)**: activation puts the switch in a PENDING state — the arming check-in email is sent immediately, but no countdown exists until the operator clicks it, proving the whole loop (email delivery, link/Tor reachability, token handling) end to end. Pending switches cannot fire or escalate, re-send the arming email every check-in interval, and survive restarts (persisted as an active session with `expires_at IS NULL`). The `/checkin` handler's timer rebuild doubles as the pending→armed transition.
+- **Out-of-band alerting (v2.1.0)**: `utils/notify.js` pushes to an ntfy topic (config field or `NTFY_TOPIC`/`NTFY_SERVER` env; unset = disabled) so failures reach the operator on a path independent of email and Tor: SMTP down/recovered, check-in send failures, missed check-ins (≥2), pre-fire warning, fire + delivery failures, save failures, dead beneficiary addresses. Repeats are throttled per issue key.
+
 ### Email Flow
 
-1. User activates switch → server schedules a check-in email at the configured interval
-2. User clicks link in check-in email → timer resets, new check-in scheduled
+1. User activates switch → switch is PENDING; the first check-in email is sent immediately
+2. User clicks link in check-in email → switch ARMS, countdown starts (later clicks reset the timer and schedule the next check-in)
 3. If timer expires without check-in → trigger emails sent to all configured recipients
 
 ### Start9 Deployment

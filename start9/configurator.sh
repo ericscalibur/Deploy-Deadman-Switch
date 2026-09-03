@@ -80,6 +80,22 @@ spec:
     masked: false
     placeholder: "http://yourtoraddress.onion"
     default: ~
+  ntfy_topic:
+    type: string
+    name: ntfy Alert Topic
+    description: Push-notification topic for out-of-band alerts (broken email, missed check-ins, switch fired). The topic name is the only secret — use a long random one, subscribe to it in the ntfy phone app. Leave empty to disable.
+    nullable: true
+    masked: true
+    placeholder: "deploy-a1b2c3d4e5f6a7b8c9d0e1f2"
+    default: ~
+  ntfy_server:
+    type: string
+    name: ntfy Server
+    description: ntfy server base URL. Leave empty to use the public ntfy.sh.
+    nullable: true
+    masked: false
+    placeholder: "https://ntfy.sh"
+    default: ~
 EOF
 }
 
@@ -115,7 +131,9 @@ process.stdout.write([
   "  smtp_port: " + (d.smtp_port || 587),
   "  smtp_user: " + y(d.smtp_user),
   "  smtp_password: " + y(d.smtp_password),
-  "  app_url: " + y(d.app_url)
+  "  app_url: " + y(d.app_url),
+  "  ntfy_topic: " + y(d.ntfy_topic),
+  "  ntfy_server: " + y(d.ntfy_server)
 ].join("\n") + "\n");
 '
     elif [ -f "$CONFIG_FILE" ]; then
@@ -134,6 +152,8 @@ value:
   smtp_user: ~
   smtp_password: ~
   app_url: ~
+  ntfy_topic: ~
+  ntfy_server: ~
 EOF
     fi
 }
@@ -162,12 +182,15 @@ set_config() {
     SMTP_USER=$(echo "$CONFIG_INPUT" | yq e '.smtp_user // ""' -)
     SMTP_PASS=$(echo "$CONFIG_INPUT" | yq e '.smtp_password // ""' -)
     APP_URL=$(echo "$CONFIG_INPUT" | yq e '.app_url // ""' -)
+    NTFY_TOPIC=$(echo "$CONFIG_INPUT" | yq e '.ntfy_topic // ""' -)
+    NTFY_SERVER=$(echo "$CONFIG_INPUT" | yq e '.ntfy_server // ""' -)
 
     # Build JSON safely via node (handles special chars in passwords/URLs)
     # Values passed one-per-line to avoid process.argv quoting issues
-    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
         "$EMAIL_PROVIDER" "$GMAIL_USER" "$GMAIL_PASS" \
-        "$SMTP_HOST" "$SMTP_PORT" "$SMTP_USER" "$SMTP_PASS" "$APP_URL" | \
+        "$SMTP_HOST" "$SMTP_PORT" "$SMTP_USER" "$SMTP_PASS" "$APP_URL" \
+        "$NTFY_TOPIC" "$NTFY_SERVER" | \
         node -e '
 const lines = require("fs").readFileSync("/dev/stdin", "utf8").split("\n");
 const v = s => (s === "" || s === "~" || s === "null") ? null : s;
@@ -179,7 +202,9 @@ const cfg = {
   smtp_port: parseInt(lines[4]) || 587,
   smtp_user: v(lines[5]),
   smtp_password: v(lines[6]),
-  app_url: v(lines[7])
+  app_url: v(lines[7]),
+  ntfy_topic: v(lines[8]),
+  ntfy_server: v(lines[9])
 };
 process.stdout.write(JSON.stringify(cfg));
 ')
@@ -215,6 +240,8 @@ SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_USER=${SMTP_USER}
 SMTP_PASS=${SMTP_PASS}
+NTFY_TOPIC=${NTFY_TOPIC}
+NTFY_SERVER=${NTFY_SERVER}
 EOF
     fi
 
