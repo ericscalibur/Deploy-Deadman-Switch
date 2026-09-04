@@ -4,7 +4,24 @@ Working list of what's staged for the next release and what's on the
 horizon. Items in "Staged" are already merged on `main` and ship
 automatically with the next version bump.
 
-## Staged for next release (v2.0.0)
+## Next up (post-v2.1.0)
+
+- **Pending-state dashboard label**: while the switch shows PENDING, the
+  caption under it still reads "Time until next check-in email" — change it
+  to "Click the link in the email you just received".
+- **Post-restart arming resend tone**: when a restart forces a fresh arming
+  email (recovery of a pending switch), the immediate resend uses the
+  URGENT reminder subject. URGENT should mean "you've been ignoring this,"
+  not "the server rebooted" — first resend after recovery should use the
+  normal subject; only interval reminders escalate.
+- **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
+  any restart invalidates every outstanding check-in/arming link until the
+  next email goes out. Observed live 2026-09-03 (config save → restart →
+  first arming email's link dead). On a monthly check-in interval a restart
+  could orphan the operator's only valid link for weeks. Store token hashes
+  server-side so links survive restarts; do before real keys.
+
+## Shipped in v2.0.0
 
 - **Beneficiary pre-fire warning** (Issue #1): after N consecutive missed
   check-in intervals (default 5), every recipient gets a plain-language
