@@ -4,8 +4,19 @@ Working list of what's staged for the next release and what's on the
 horizon. Items in "Staged" are already merged on `main` and ship
 automatically with the next version bump.
 
-## Next up (post-v2.1.1)
+## Next up (post-v2.1.2)
 
+- **Pre-deployment recipient subtext is premature**: before the switch is
+  deployed, a saved recipient's row reads "Not yet confirmed by recipient".
+  Nothing has been attempted yet, so that describes a pending action that
+  does not exist — and it reads as a problem the operator should fix.
+  Should read "Save and Deploy to send first contact emails" until
+  activation, then switch to the contact states. `loadBeneficiaryStatus()`
+  already renders the contact line; the missing input is whether a switch
+  is active, which the dashboard knows from `/timer-status`.
+- **Rework the address-confirmation explanation**: the paragraph under "Ask
+  this recipient to confirm their address" in the message editor is not
+  right yet. Operator rewriting it; current text is a placeholder.
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
   next email goes out. Observed live 2026-09-03 (config save → restart →
