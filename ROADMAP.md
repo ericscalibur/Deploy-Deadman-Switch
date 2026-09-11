@@ -28,18 +28,23 @@ automatically with the next version bump.
   which is the more confusing one because the operator remembers when they
   last checked in. Observed 2026-09-10 from UTC-6.
 
-- **Check whether the SeedSigner main-menu entry actually renders**: at
-  `2e19bf4` the fork adds "Legacy Encryption" to BOTH the Tools menu
-  (`tools_views.py`) and the main menu (`view.py`,
-  `[SCAN, SEEDS, TOOLS, SETTINGS, LEGACY]`), but only the Tools path was
-  observed on hardware 2026-09-11. Either the top-level entry is redundant
-  and should be removed, or the main menu is not rendering its fifth button
-  — worth knowing which before more people flash the published image. The
-  trigger email documents the Tools path, which is confirmed working.
-- **`INTEGRATION.md` menu instructions are wrong**: it tells the reader to
-  wire the entry into `MainMenuView`, but the shipped firmware reaches it
-  through Tools. Anyone following the guide to build their own image gets a
-  different menu layout from the release.
+- **The `legacy-image` branch builds a broken main menu**: `0bf1c75` adds
+  `LEGACY` to `view.py`'s main menu — `[SCAN, SEEDS, TOOLS, SETTINGS,
+  LEGACY]`. `MainMenuScreen` extends `LargeButtonScreen`, whose
+  `__post_init__` raises "LargeButtonScreen only supports 2 or 4 buttons"
+  (2×2 grid, no pagination) and does not override it, so the controller
+  catches it into `handle_exception` and the device lands on an error
+  screen instead of the main menu. Released images are NOT affected:
+  `build.sh` clones upstream fresh and runs `patch_menu.py`, which patches
+  `tools_views.py` only. But anyone who clones the fork and builds from the
+  branch gets a bricked main menu. Remove the `view.py` entry, or rework the
+  main menu to a screen type that paginates.
+- **`INTEGRATION.md` menu instructions are wrong**: step 4 says to wire the
+  entry into `MainMenuView`. That is the exact change that breaks the main
+  menu (above), and it disagrees with what `build.sh` and the shipped
+  firmware actually do, which is Tools. Rewrite step 4 to patch
+  `tools_views.py`. This doc is what led the Deploy trigger email to
+  document the wrong menu path.
 
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
