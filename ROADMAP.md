@@ -17,6 +17,17 @@ automatically with the next version bump.
 - **Rework the address-confirmation explanation**: the paragraph under "Ask
   this recipient to confirm their address" in the message editor is not
   right yet. Operator rewriting it; current text is a placeholder.
+- **Label displayed dates as UTC**: dates render a day ahead when viewed in
+  the evening from the Americas. Not a conversion bug — storage is UTC,
+  `parseDbTimestamp()` appends `Z`, and the ISO the server sends is correct.
+  Tor Browser pins the page's timezone to UTC as anti-fingerprinting, so
+  `toLocaleDateString()` renders UTC regardless of where the operator is.
+  Detecting the real timezone is exactly what that defence prevents, so the
+  fix is to stop implying local time: render "11 Sep 2026 (UTC)". Applies
+  to every date in the UI — recipient contact dates and "Last activity",
+  which is the more confusing one because the operator remembers when they
+  last checked in. Observed 2026-09-10 from UTC-6.
+
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
   next email goes out. Observed live 2026-09-03 (config save → restart →
