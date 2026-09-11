@@ -1,7 +1,13 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.2
+version: 2.1.3
 release-notes: |
+  - Fix: the trigger email gave the wrong menu path for decrypting on a
+    SeedSigner. It said "Legacy Encryption -> Decrypt Seed Phrase"; the
+    firmware reaches it through Tools. Now reads "Tools -> Legacy
+    Encryption -> Decrypt Seed Phrase", confirmed on hardware. These are
+    instructions a beneficiary follows once, years later, with nobody left
+    to ask — a wrong menu path there is a dead end, not an inconvenience.
   - The recipient table no longer flickers. A background sync rebuilt the
     table every 5 seconds even when nothing had changed, blanking each
     recipient's status line and shifting everything below it. It now
