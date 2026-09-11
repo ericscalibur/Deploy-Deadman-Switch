@@ -645,8 +645,11 @@ body {
 }
 
 /* The Save row must not ride up beside the floated card. */
+/* Deliberately does NOT clear the float. Clearing pushed Save below the
+   whole card, so expanding the template opened a large dead gap above the
+   button. The card is floated right, so Save simply sits beside it in the
+   left column instead. */
 .form-actions {
-    clear: both;
     padding-top: 22px;
 }
 

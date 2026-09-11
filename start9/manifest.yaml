@@ -1,7 +1,12 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.4
+version: 2.1.5
 release-notes: |
+  - The first-contact template in the message editor now shows your own
+    email address where the beneficiary will see it, instead of a
+    placeholder — the decision is whether this person should be contacted,
+    and the email names you.
+  - Fix: expanding the template no longer opens a gap above the Save button.
   - Before a switch is deployed, recipients no longer read "Not yet
     confirmed by recipient". Nothing has been attempted at that point, so
     that described a pending action which did not exist and read as a fault
