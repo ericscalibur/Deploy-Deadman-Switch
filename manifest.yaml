@@ -1,7 +1,16 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.7
+version: 2.1.8
 release-notes: |
+  - Fix: after a page reload the dashboard stopped updating. A variable was
+    read before it was initialised, which threw during startup and stopped
+    the background sync from ever being scheduled — so countdowns and the
+    button froze until you navigated again. Introduced in 2.1.2.
+  - The deploy button no longer offers to deploy a switch that is already
+    running. Determining the switch's state takes several round trips over
+    Tor; until that completes the button is disabled and reads "Checking
+    switch status…" instead of showing a green Deploy over a live switch.
+    If the status cannot be determined it says so rather than guessing.
   - Beneficiaries are no longer contacted when you deploy. They are
     contacted when the switch actually ARMS — when you click the link in
     your first check-in email. Deploying only puts the switch in PENDING;

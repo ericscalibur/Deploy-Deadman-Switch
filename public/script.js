@@ -659,6 +659,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   let deadmanActivationTime = null;
   let lastActivityTime = new Date();
   let deadmanSwitchActivated = false;
+  // These two MUST be declared above the auth/init block below. On a page
+  // reload that block calls updateButtonState() while the script body is
+  // still executing, so a `let` declared further down is still in its
+  // temporal dead zone: reading it throws, syncWithBackend() aborts, and
+  // startCountdownTimers() never reaches the line that creates the 5s sync
+  // interval — leaving the dashboard frozen until the next navigation.
+  let currentButtonState = null;
+  // False until the server has told us whether a switch is armed. Until
+  // then the button stays disabled: offering "Deploy" on a switch that is
+  // already running is the one wrong action this page can invite.
+  let buttonStateResolved = false;
   let syncInterval = null;
   let visibilityHandlerBound = false;
   // True while an activate/deactivate request is in flight. The 5s sync
@@ -882,8 +893,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       } else {
         const errorText = await response.text();
+        setButtonUnknown();
       }
-    } catch (error) {}
+    } catch (error) {
+      setButtonUnknown();
+    }
   }
 
   // Function to calculate next check-in time
@@ -1200,8 +1214,18 @@ document.addEventListener("DOMContentLoaded", async () => {
           // the explicit "start from scratch" case.
 
           updateButtonState("triggered");
+        } else if (data.active) {
+          // Armed and running. This endpoint answers a round trip before
+          // /timer-status does, so resolving the button here is both
+          // correct and faster — previously "not triggered" was misread as
+          // "not armed", briefly painting a green Deploy over a live switch.
+          deadmanSwitchActivated = true;
+          deadmanSwitchFired = false;
+          hideActivationNotice();
+          localStorage.setItem("deadmanSwitchActivated", "true");
+          updateButtonState("active");
         } else {
-          // No deadman switch active
+          // No deadman switch at all.
           deadmanSwitchActivated = false;
           deadmanSwitchFired = false;
           hideActivationNotice();
@@ -1213,7 +1237,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Function to update button state based on deadman status
-  let currentButtonState = null;
+
+  // Used when the state cannot be determined at all. Staying disabled and
+  // saying so beats defaulting to Deploy, which would be a guess about the
+  // one thing that must not be guessed.
+  // Tor can stall rather than fail, leaving every fetch pending. Without
+  // this the button would sit on "Checking…" indefinitely.
+  setTimeout(() => setButtonUnknown(), 20000);
+
+  function setButtonUnknown() {
+    if (!saveSettingsButton || buttonStateResolved) return;
+    saveSettingsButton.disabled = true;
+    saveSettingsButton.textContent = "Status unavailable — reload to retry";
+    saveSettingsButton.className = "";
+  }
 
   // Busy state is presentational only: it never becomes currentButtonState,
   // so the real state is restored intact once the request settles.
@@ -1233,6 +1270,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function updateButtonState(state) {
     if (!saveSettingsButton) return;
+    // Reaching here at all means the server has told us what the switch is
+    // doing, so the button is safe to act on.
+    buttonStateResolved = true;
+    saveSettingsButton.disabled = false;
     // Rewriting the same state repaints the button for no reason; with more
     // than one writer that is visible as flicker.
     if (state === currentButtonState) return;

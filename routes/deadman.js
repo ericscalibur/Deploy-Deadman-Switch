@@ -2552,6 +2552,7 @@ router.get("/deadman-status", authenticateToken, (req, res) => {
     if (activationHistory && activationHistory.triggered) {
       return res.json({
         triggered: true,
+        active: false,
         message:
           "Deadman switch has been activated - beneficiary emails were sent",
         canReset: true,
@@ -2565,6 +2566,10 @@ router.get("/deadman-status", authenticateToken, (req, res) => {
     if (hasActiveSwitch) {
       return res.json({
         triggered: false,
+        // Explicit: "not triggered" is NOT the same as "not armed". Without
+        // this the dashboard cannot tell a running switch from no switch at
+        // all, and paints the green Deploy button over a live one.
+        active: true,
         message: "Deadman switch is active and running",
         canReset: false,
       });
@@ -2573,6 +2578,7 @@ router.get("/deadman-status", authenticateToken, (req, res) => {
     // No active switch and no activation history = never activated
     res.json({
       triggered: false,
+      active: false,
       message: "No deadman switch configured",
       canReset: false,
     });

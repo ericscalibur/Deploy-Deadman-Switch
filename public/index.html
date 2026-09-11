@@ -194,8 +194,13 @@
                 <button id="new-email-button">+ New</button>
             </div>
             <div class="settings-button-container">
-                <button id="save-settings-button">
-                    Save Settings & Deploy Deadman Switch
+                <!-- Starts disabled and non-committal. Determining whether a
+                     switch is armed takes several round trips over Tor, and
+                     until then this button must not offer to deploy: on a
+                     live switch that invites the operator to re-deploy one
+                     that is already running. -->
+                <button id="save-settings-button" disabled>
+                    Checking switch status…
                 </button>
                 <p class="settings-warning">
                     Warning: Once deployed, check-in emails will begin
