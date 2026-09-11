@@ -1,7 +1,18 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.3
+version: 2.1.4
 release-notes: |
+  - Before a switch is deployed, recipients no longer read "Not yet
+    confirmed by recipient". Nothing has been attempted at that point, so
+    that described a pending action which did not exist and read as a fault
+    to fix. Now reads "Save and Deploy to send first contact emails", and
+    updates the moment you deploy.
+  - Dates are now shown in UTC and say so, e.g. "Sep 11, 2026 (UTC)".
+    Deploy is normally reached over Tor, and Tor Browser pins the page's
+    timezone to UTC as anti-fingerprinting — so dates could appear a day
+    ahead or behind with nothing to explain why. Detecting the real
+    timezone is exactly what that protection prevents, so the zone is
+    named instead of implied.
   - Fix: the trigger email gave the wrong menu path for decrypting on a
     SeedSigner. It said "Legacy Encryption -> Decrypt Seed Phrase"; the
     firmware reaches it through Tools. Now reads "Tools -> Legacy

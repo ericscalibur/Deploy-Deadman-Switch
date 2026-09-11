@@ -251,6 +251,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         deadmanSwitchActivated = true;
         deadmanSwitchPending = data.pending !== false;
         localStorage.setItem("deadmanSwitchActivated", "true");
+        // The recipient rows say "Save and Deploy to send first contact
+        // emails" until a switch exists. Repaint now rather than leaving
+        // that stale for up to the status-refresh interval.
+        loadEmails({ force: true });
         logActivity();
         await startCountdownTimers();
         // Update button state to deactivate functionality
@@ -389,6 +393,45 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  // ---- Date rendering -------------------------------------------------
+  // Every date is rendered in UTC and says so.
+  //
+  // Tor Browser pins the page's timezone to UTC as anti-fingerprinting — a
+  // page that can read your real timezone has narrowed you to a slice of the
+  // planet. So toLocaleString() renders UTC no matter where the operator is,
+  // and an unlabelled date reads as simply wrong: in the Americas an evening
+  // check-in shows tomorrow's date. Detecting the real zone is precisely
+  // what that defence prevents, so the honest fix is to stop implying local
+  // time and name the zone.
+  function formatUtcDate(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return "unknown";
+    return (
+      d.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      }) + " (UTC)"
+    );
+  }
+
+  function formatUtcDateTime(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return "unknown";
+    return (
+      d.toLocaleString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "UTC",
+      }) + " (UTC)"
+    );
+  }
+
   // ---- Fired-switch notice (tester report #3) ----------------------------------
   // The notice is cleared only by the operator. Dismissal is remembered
   // against the activation timestamp, so a page reload does not resurrect a
@@ -410,7 +453,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const detail = document.getElementById("activation-notice-detail");
     if (detail) {
       const when = activationTime
-        ? new Date(activationTime).toLocaleString()
+        ? formatUtcDateTime(activationTime)
         : "an earlier time (exact time unavailable)";
       const count = data.emailsSent;
       const delivered =
@@ -503,21 +546,25 @@ document.addEventListener("DOMContentLoaded", async () => {
           `.last-contact[data-address="${CSS.escape(b.address)}"]`,
         );
         if (!el) continue;
-        const fmt = (iso) =>
-          new Date(iso).toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          });
         el.className = "last-contact";
+        // Order matters: a switch that has already fired is no longer
+        // active, but its recipients were contacted — so the ping states are
+        // checked before the not-yet-deployed state.
         if (b.ackAt) {
           // The only real proof this address reaches a living person: they
           // clicked. Worth stating even when contact checks are since off.
-          el.textContent = `Contact confirmed by recipient ${fmt(b.ackAt)}`;
+          el.textContent = `Contact confirmed by recipient ${formatUtcDate(b.ackAt)}`;
           el.classList.add("contact-ok");
         } else if (b.pingSentAt) {
-          el.textContent = `Contact check sent ${fmt(b.pingSentAt)} — not yet confirmed`;
+          el.textContent = `Contact check sent ${formatUtcDate(b.pingSentAt)} — not yet confirmed`;
           el.classList.add("contact-pending");
+        } else if (contactChecks && !deadmanSwitchActivated) {
+          // Nothing has been attempted yet, and nothing will be until the
+          // switch is deployed. "Not yet confirmed" would describe a pending
+          // action that does not exist, and reads as a fault to fix rather
+          // than a step not yet reached.
+          el.textContent = "Save and Deploy to send first contact emails";
+          el.classList.add("contact-not-started");
         } else if (contactChecks) {
           el.textContent = "Not yet confirmed by recipient";
           el.classList.add("contact-pending");
@@ -761,7 +808,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else if (!deadmanSwitchActivated) {
         lastActivityElement.textContent = "Not deployed";
       } else {
-        lastActivityElement.textContent = lastActivityTime.toLocaleString();
+        lastActivityElement.textContent = formatUtcDateTime(lastActivityTime);
       }
     }
   }

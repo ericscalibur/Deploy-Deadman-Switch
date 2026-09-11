@@ -6,52 +6,37 @@ automatically with the next version bump.
 
 ## Next up (post-v2.1.2)
 
-- **Pre-deployment recipient subtext is premature**: before the switch is
-  deployed, a saved recipient's row reads "Not yet confirmed by recipient".
-  Nothing has been attempted yet, so that describes a pending action that
-  does not exist — and it reads as a problem the operator should fix.
-  Should read "Save and Deploy to send first contact emails" until
-  activation, then switch to the contact states. `loadBeneficiaryStatus()`
-  already renders the contact line; the missing input is whether a switch
-  is active, which the dashboard knows from `/timer-status`.
-- **Rework the address-confirmation explanation**: the paragraph under "Ask
-  this recipient to confirm their address" in the message editor is not
-  right yet. Operator rewriting it; current text is a placeholder.
-- **Label displayed dates as UTC**: dates render a day ahead when viewed in
-  the evening from the Americas. Not a conversion bug — storage is UTC,
-  `parseDbTimestamp()` appends `Z`, and the ISO the server sends is correct.
-  Tor Browser pins the page's timezone to UTC as anti-fingerprinting, so
-  `toLocaleDateString()` renders UTC regardless of where the operator is.
-  Detecting the real timezone is exactly what that defence prevents, so the
-  fix is to stop implying local time: render "11 Sep 2026 (UTC)". Applies
-  to every date in the UI — recipient contact dates and "Last activity",
-  which is the more confusing one because the operator remembers when they
-  last checked in. Observed 2026-09-10 from UTC-6.
-
-- **The `legacy-image` branch builds a broken main menu**: `0bf1c75` adds
-  `LEGACY` to `view.py`'s main menu — `[SCAN, SEEDS, TOOLS, SETTINGS,
-  LEGACY]`. `MainMenuScreen` extends `LargeButtonScreen`, whose
-  `__post_init__` raises "LargeButtonScreen only supports 2 or 4 buttons"
-  (2×2 grid, no pagination) and does not override it, so the controller
-  catches it into `handle_exception` and the device lands on an error
-  screen instead of the main menu. Released images are NOT affected:
-  `build.sh` clones upstream fresh and runs `patch_menu.py`, which patches
-  `tools_views.py` only. But anyone who clones the fork and builds from the
-  branch gets a bricked main menu. Remove the `view.py` entry, or rework the
-  main menu to a screen type that paginates.
-- **`INTEGRATION.md` menu instructions are wrong**: step 4 says to wire the
-  entry into `MainMenuView`. That is the exact change that breaks the main
-  menu (above), and it disagrees with what `build.sh` and the shipped
-  firmware actually do, which is Tools. Rewrite step 4 to patch
-  `tools_views.py`. This doc is what led the Deploy trigger email to
-  document the wrong menu path.
-
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
   next email goes out. Observed live 2026-09-03 (config save → restart →
   first arming email's link dead). On a monthly check-in interval a restart
   could orphan the operator's only valid link for weeks. Store token hashes
   server-side so links survive restarts; do before real keys.
+
+## Shipped in v2.1.4
+
+- **Pre-deployment recipient subtext**: rows read "Save and Deploy to send
+  first contact emails" until a switch exists, instead of "Not yet confirmed
+  by recipient" — which described a pending action that had not been
+  attempted and read as a fault. Ping states are checked first so a fired
+  switch still shows its contact history. Forced repaint on activation so
+  it updates immediately rather than at the next status refresh.
+- **Dates labelled UTC**: `formatUtcDate()` / `formatUtcDateTime()` render
+  every date in UTC with the zone named. Tor Browser pins the page timezone
+  to UTC for anti-fingerprinting, so local time cannot be rendered and
+  detecting the real zone is what that defence prevents. Verified under a
+  UTC-forced browser context.
+- **Address-confirmation copy rewritten** (operator's wording), with "see
+  the template" expanding the actual first-contact email — subject and body
+  taken from `sendBeneficiaryPing()`, so the operator judges what the
+  beneficiary really receives rather than a description of it.
+- **SeedSigner `INTEGRATION.md` step 4 corrected** and the `legacy-image`
+  branch's main-menu entry removed (`792cbdd` in the seedsigner fork).
+  `MainMenuScreen` extends `LargeButtonScreen`, a fixed 2×2 grid that raises
+  on any count but 2 or 4, so the five-entry main menu booted to an error
+  screen. Released images were never affected — `build.sh` patches
+  `tools_views.py` only — but the doc prescribed exactly the breaking
+  change, and it is what made the trigger email document the wrong path.
 
 ## Shipped in v2.1.1
 

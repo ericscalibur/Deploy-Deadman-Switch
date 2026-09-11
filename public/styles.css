@@ -533,6 +533,11 @@ body {
     color: #b8860b;
 }
 
+/* Nothing attempted yet — a next step, not a fault. Neutral, not amber. */
+.last-contact.contact-not-started {
+    color: #666;
+}
+
 .last-contact.contact-off {
     color: #777;
     font-style: italic;
@@ -578,6 +583,57 @@ body {
     width: auto;
     margin: 0;
     flex: none;
+}
+
+.contact-check-option .contact-check-intro {
+    margin: 0 0 12px;
+    color: #555;
+    font-size: 0.82em;
+    line-height: 1.45;
+}
+
+.contact-check-option .contact-check-intro a {
+    color: #1d6fa5;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* The real first-contact email, shown verbatim so the operator can judge
+   what the beneficiary actually receives. */
+#contact-template {
+    background-color: #fff;
+    border: 1px solid #ddd;
+    border-left: 4px solid #5bc0de;
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 0 0 12px;
+    font-size: 0.78em;
+    line-height: 1.45;
+    color: #333;
+}
+
+#contact-template p {
+    margin: 0 0 8px;
+}
+
+#contact-template p:last-child {
+    margin-bottom: 0;
+}
+
+#contact-template .contact-template-subject {
+    padding-bottom: 6px;
+    border-bottom: 1px solid #eee;
+}
+
+#contact-template .contact-template-link {
+    font-family: monospace;
+    word-break: break-all;
+    color: #1d6fa5;
+}
+
+#contact-template .contact-template-foot {
+    color: #777;
+    font-size: 0.92em;
 }
 
 .contact-check-option small {
