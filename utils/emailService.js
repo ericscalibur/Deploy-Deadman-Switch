@@ -799,6 +799,70 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
   // firstContact selects introduction wording for an address that has never
   // been contacted (sent the moment a switch is armed); the default wording
   // is the annual renewal.
+  // Single source of truth for the beneficiary contact email.
+  //
+  // The message editor shows the operator this exact text before they decide
+  // whether a beneficiary should receive it, so it is built here and used by
+  // both the sender and the preview endpoint. A hand-maintained copy in the
+  // UI would drift the moment this wording changed — and it is the copy the
+  // operator trusts when making that decision.
+  buildBeneficiaryPingContent(operatorEmail, ackUrl, firstContact = false) {
+    const esc = (v) =>
+      String(v)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const op = esc(operatorEmail);
+    const url = esc(ackUrl);
+    const tor = torNotice(ackUrl);
+
+    const subject = firstContact
+      ? `${operatorEmail} listed you as a trusted contact — one click required`
+      : `Annual contact check for ${operatorEmail} — one click required`;
+
+    const introHtml = firstContact
+      ? `<p><strong>${op}</strong> has set up an automated notification
+        system and listed this address as a trusted contact. If they ever become
+        unreachable for a long period, this system will send you important
+        information they prepared. Nothing is wrong and nothing is being sent
+        to you now.</p>
+        <p>To confirm the line of communication works, <strong>please click:</strong><br>
+        <a href="${url}">${url}</a></p>`
+      : `<p>This is the once-a-year address verification from the automated
+        notification system that <strong>${op}</strong> set up with you
+        in mind. Nothing is wrong and nothing is being sent to you.</p>
+        <p><strong>Please confirm this address still works by clicking:</strong><br>
+        <a href="${url}">${url}</a></p>`;
+
+    const introText = firstContact
+      ? `${operatorEmail} has set up an automated notification system and listed this address as a trusted contact. If they ever become unreachable for a long period, this system will send you important information they prepared. Nothing is wrong and nothing is being sent to you now.
+
+To confirm the line of communication works, please open this link:
+${ackUrl}`
+      : `This is the once-a-year address verification from the automated notification system that ${operatorEmail} set up with you in mind. Nothing is wrong and nothing is being sent to you.
+
+Please confirm this address still works by opening this link:
+${ackUrl}`;
+
+    return {
+      subject,
+      html: `
+        ${introHtml}${tor.html}
+        <p>If you don't confirm within 30 days, ${op} will be alerted
+        that this address may no longer be in use.</p>
+        <p><small>Automated message from Deploy Deadman Switch on behalf of ${op}. After this, expect exactly one verification per year.</small></p>
+      `,
+      text: `
+${introText}
+${tor.text}
+If you don't confirm within 30 days, ${operatorEmail} will be alerted that this address may no longer be in use.
+
+Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.
+      `,
+    };
+  }
+
   async sendBeneficiaryPing(
     recipientEmail,
     operatorEmail,
@@ -812,51 +876,18 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
       return false;
     }
 
-    const tor = torNotice(ackUrl);
-
-    const subject = firstContact
-      ? `${operatorEmail} listed you as a trusted contact — one click required`
-      : `Annual contact check for ${operatorEmail} — one click required`;
-    const introHtml = firstContact
-      ? `<p><strong>${operatorEmail}</strong> has set up an automated notification
-        system and listed this address as a trusted contact. If they ever become
-        unreachable for a long period, this system will send you important
-        information they prepared. Nothing is wrong and nothing is being sent
-        to you now.</p>
-        <p>To confirm the line of communication works, <strong>please click:</strong><br>
-        <a href="${ackUrl}">${ackUrl}</a></p>`
-      : `<p>This is the once-a-year address verification from the automated
-        notification system that <strong>${operatorEmail}</strong> set up with you
-        in mind. Nothing is wrong and nothing is being sent to you.</p>
-        <p><strong>Please confirm this address still works by clicking:</strong><br>
-        <a href="${ackUrl}">${ackUrl}</a></p>`;
-    const introText = firstContact
-      ? `${operatorEmail} has set up an automated notification system and listed this address as a trusted contact. If they ever become unreachable for a long period, this system will send you important information they prepared. Nothing is wrong and nothing is being sent to you now.
-
-To confirm the line of communication works, please open this link:
-${ackUrl}`
-      : `This is the once-a-year address verification from the automated notification system that ${operatorEmail} set up with you in mind. Nothing is wrong and nothing is being sent to you.
-
-Please confirm this address still works by opening this link:
-${ackUrl}`;
+    const { subject, html, text } = this.buildBeneficiaryPingContent(
+      operatorEmail,
+      ackUrl,
+      firstContact,
+    );
 
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
       to: recipientEmail,
       subject,
-      html: `
-        ${introHtml}${tor.html}
-        <p>If you don't confirm within 30 days, ${operatorEmail} will be alerted
-        that this address may no longer be in use.</p>
-        <p><small>Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.</small></p>
-      `,
-      text: `
-${introText}
-${tor.text}
-If you don't confirm within 30 days, ${operatorEmail} will be alerted that this address may no longer be in use.
-
-Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.
-      `,
+      html,
+      text,
     };
 
     try {

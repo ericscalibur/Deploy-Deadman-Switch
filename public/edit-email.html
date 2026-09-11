@@ -111,36 +111,8 @@
                     </p>
 
                     <div id="contact-template" hidden>
-                        <p class="contact-template-subject">
-                            <strong>Subject:</strong>
-                            <span class="tpl-operator">your address</span> listed
-                            you as a trusted contact — one click required
-                        </p>
-                        <p>
-                            <strong class="tpl-operator">your address</strong> has set up an
-                            automated notification system and listed this
-                            address as a trusted contact. If they ever become
-                            unreachable for a long period, this system will
-                            send you important information they prepared.
-                            Nothing is wrong and nothing is being sent to you
-                            now.
-                        </p>
-                        <p>
-                            To confirm the line of communication works,
-                            <strong>please click:</strong><br />
-                            <span class="contact-template-link"
-                                >https://your-deploy-address/deadman/ack/…</span
-                            >
-                        </p>
-                        <p>
-                            If you don't confirm within 30 days,
-                            <span class="tpl-operator">your address</span> will be
-                            alerted that this address may no longer be in use.
-                        </p>
-                        <p class="contact-template-foot">
-                            Automated message from Deploy Deadman Switch on
-                            behalf of <span class="tpl-operator">your address</span>. After this, expect
-                            exactly one verification per year.
+                        <p class="contact-template-loading">
+                            Loading the email…
                         </p>
                     </div>
 
@@ -641,25 +613,40 @@
                 // Show the actual first-contact email rather than describing
                 // it — the operator is deciding whether a beneficiary should
                 // receive this, which they cannot judge from a summary.
-                // Show the operator's own address in the template. Seeing
-                // their real address in the text is the point — it is what
-                // the beneficiary will see, and it makes concrete that this
-                // email names them.
-                (async () => {
+                // The template is fetched from the server, which renders it
+                // with the same builder the sender uses — so what the operator
+                // reads here cannot drift from what the beneficiary receives.
+                let templateLoaded = false;
+                async function loadContactTemplate(block) {
+                    if (templateLoaded) return;
                     try {
-                        const res = await fetch("/deadman/status", { credentials: "include" });
-                        if (!res.ok) return;
+                        const res = await fetch("/deadman/contact-template", {
+                            credentials: "include",
+                        });
+                        if (!res.ok) throw new Error("status " + res.status);
                         const data = await res.json();
-                        const addr = data && data.user && data.user.email;
-                        if (!addr) return;
-                        document
-                            .querySelectorAll(".tpl-operator")
-                            .forEach((el) => { el.textContent = addr; });
+                        const subject = document.createElement("p");
+                        subject.className = "contact-template-subject";
+                        const label = document.createElement("strong");
+                        label.textContent = "Subject: ";
+                        subject.appendChild(label);
+                        // textContent, not innerHTML — the subject is plain text.
+                        subject.appendChild(document.createTextNode(data.subject || ""));
+                        const body = document.createElement("div");
+                        body.innerHTML = data.html || "";
+                        block.innerHTML = "";
+                        block.appendChild(subject);
+                        block.appendChild(body);
+                        templateLoaded = true;
                     } catch (e) {
-                        // Leave the neutral placeholder; the template is
-                        // illustrative and must not break the editor.
+                        block.innerHTML =
+                            '<p class="contact-template-loading">' +
+                            "Could not load the template right now. It is the " +
+                            "email your beneficiary receives asking them to " +
+                            "confirm this address." +
+                            "</p>";
                     }
-                })();
+                }
 
                 const templateToggle = document.getElementById("contact-template-toggle");
                 const templateBlock  = document.getElementById("contact-template");
@@ -670,6 +657,9 @@
                         templateToggle.textContent = templateBlock.hidden
                             ? "Click here to see the template."
                             : "Hide the template.";
+                        if (!templateBlock.hidden) {
+                            loadContactTemplate(templateBlock);
+                        }
                     });
                 }
 

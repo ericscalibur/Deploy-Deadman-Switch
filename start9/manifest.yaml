@@ -1,7 +1,13 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.5
+version: 2.1.6
 release-notes: |
+  - The first-contact template shown in the message editor is now the real
+    email, served by the server from the same code that sends it. It was a
+    copy maintained by hand, which would have drifted silently the first
+    time that wording changed — and it is the text the operator relies on
+    when deciding whether a beneficiary should be contacted at all. The
+    confirmation link in the preview is deliberately inert.
   - The first-contact template in the message editor now shows your own
     email address where the beneficiary will see it, instead of a
     placeholder — the decision is whether this person should be contacted,

@@ -1362,6 +1362,28 @@ router.get("/emails", authenticateToken, async (req, res) => {
   }
 });
 
+// The first-contact email exactly as a beneficiary would receive it, for the
+// message editor to show before the operator decides whether to send it.
+// Rendered from the same builder the sender uses, so the preview cannot
+// drift from the real thing.
+//
+// The ack URL here is illustrative. Minting a real token for a preview would
+// create a live one-click confirmation that nobody was ever sent, quietly
+// marking an address verified that was never contacted.
+router.get("/contact-template", authenticateToken, (req, res) => {
+  try {
+    const { subject, html } = emailService.buildBeneficiaryPingContent(
+      req.user.email,
+      `${appUrl()}/deadman/ack/EXAMPLE-LINK-NOT-ACTIVE`,
+      true,
+    );
+    res.json({ success: true, subject, html });
+  } catch (error) {
+    console.error("Error building contact template preview:", error);
+    res.status(500).json({ message: "Failed to build contact template" });
+  }
+});
+
 // Per-beneficiary contact status for the dashboard. Ping rows are keyed by
 // SHA-256 of the address (plaintext never lands in beneficiary_pings), so
 // the mapping back to readable addresses can only be made here, after
