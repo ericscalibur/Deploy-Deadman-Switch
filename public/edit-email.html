@@ -99,6 +99,34 @@
                     required
                 /><br /><br />
 
+                <!-- Per-recipient, because the trade-off is per-recipient: a
+                     lawyer can be told they are listed; a family member you are
+                     leaving a secret to may need to learn nothing until the
+                     message arrives. Default on — their click is the only real
+                     proof the address still reaches them. -->
+                <div class="contact-check-option">
+                    <label for="contact-checks" class="checkbox-label">
+                        <input
+                            type="checkbox"
+                            id="contact-checks"
+                            name="contact-checks"
+                            checked
+                        />
+                        Ask this recipient to confirm their address
+                    </label>
+                    <small>
+                        Sends them a one-click confirmation link — now, and
+                        once a year after that. It says only that you have
+                        listed them and that a message may come someday; it
+                        never reveals your message, your payload, or why.
+                        <strong>Recommended.</strong> Turn it off only if this
+                        recipient must learn nothing until your message
+                        arrives — with it off, this address is never verified,
+                        and if it quietly dies you will not find out.
+                    </small>
+                </div>
+                <br />
+
                 <label for="email-content">Email Content:</label>
                 <br />
                 <textarea
@@ -571,6 +599,7 @@
                 const emailAddressInput    = document.getElementById("email-address");
                 const emailContentTextarea = document.getElementById("email-content");
                 const saveButton           = document.getElementById("save-email-button");
+                const contactChecksInput   = document.getElementById("contact-checks");
 
                 const urlParams  = new URLSearchParams(window.location.search);
                 const emailIndex = urlParams.get("index");
@@ -582,6 +611,9 @@
                         emailAddressInput.value    = email.address;
                         emailContentTextarea.value = email.content;
                         payloadTextarea.value      = email.payload || "";
+                        // Absent means on: every recipient saved before this
+                        // option existed was already being asked to confirm.
+                        contactChecksInput.checked = email.contactChecks !== false;
                     }
                 }
 
@@ -591,6 +623,7 @@
                     const emailAddress = emailAddressInput.value;
                     const emailContent = emailContentTextarea.value;
                     const emailPayload = payloadTextarea.value.trim();
+                    const contactChecks = contactChecksInput.checked;
 
                     try {
                         const password = localStorage.getItem("userPassword");
@@ -602,6 +635,7 @@
                                 emailAddress,
                                 emailContent,
                                 emailPayload: emailPayload || null,
+                                contactChecks,
                                 emailIndex: emailIndex ? parseInt(emailIndex) : null,
                                 password: password,
                             }),
@@ -612,6 +646,7 @@
                             const emailData = {
                                 address: emailAddress,
                                 content: emailContent,
+                                contactChecks,
                                 ...(emailPayload && { payload: emailPayload }),
                             };
 

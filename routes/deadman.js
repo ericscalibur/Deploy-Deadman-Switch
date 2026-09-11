@@ -20,6 +20,7 @@ const {
   DEFAULT_PING_ACK_GRACE_DAYS,
 } = require("../utils/escalation");
 const { notify, notifyThrottled } = require("../utils/notify");
+const { createSerialQueue } = require("../utils/serialQueue");
 
 // Beneficiary escalation configuration (Issues #1/#2). Defaults follow the
 // modification spec: warning after 5 consecutive check-in intervals of
@@ -180,7 +181,13 @@ async function recoverActiveDeadmanSwitches() {
           console.log(
             `⏳ RECOVERY: Restored PENDING switch for ${session.email} — awaiting first check-in, no countdown running`,
           );
-          await sendArmingCheckin(session.email, pendingSwitch, true);
+          // Not a reminder: the operator has ignored nothing — the server
+          // restarted and invalidated the outstanding link, so this resend
+          // is the system's fault, not theirs. URGENT is reserved for
+          // "you have been ignoring this"; spending it on a reboot is how
+          // urgency markers stop meaning anything. Interval reminders from
+          // startPendingReminders() still escalate normally.
+          await sendArmingCheckin(session.email, pendingSwitch, false);
           continue;
         }
 
@@ -555,7 +562,7 @@ async function syncActiveSwitchRecipients(userEmail, emails) {
 
   // A beneficiary added to an armed switch gets first contact immediately;
   // pingAction() skips everyone already verified.
-  processBeneficiaryPings(switchData.userId, userEmail, emails).catch(
+  queueBeneficiaryPings(switchData.userId, userEmail, emails).catch(
     (error) =>
       console.error(
         `❌ PING: First-contact pass after recipient edit failed for ${userEmail}:`,
@@ -756,24 +763,54 @@ async function runBeneficiaryPingSweep() {
         continue;
       }
 
-      await processBeneficiaryPings(session.user_id, session.email, recipients);
+      await queueBeneficiaryPings(session.user_id, session.email, recipients);
     }
   } catch (error) {
     console.error("❌ PING SWEEP: Sweep failed:", error);
   }
 }
 
+// One ping pass at a time per operator.
+//
+// pingAction() is idempotent only against *committed* state: it decides
+// "send" whenever the beneficiary_pings row is still absent. The row is not
+// written until sendBeneficiaryPing() resolves, so two passes that overlap
+// inside that window both read "never contacted" and both send. That window
+// is easy to hit — every recipient edit kicks off a pass (fire-and-forget),
+// so two quick edits, or an edit landing while the daily sweep runs, mail
+// the same person two or three copies of "you have been listed as a trusted
+// contact". Beneficiaries are strangers to this system; duplicate unexplained
+// mail is exactly what makes them dismiss it as spam, and the ack click is
+// the only real confirmation an address is good.
+//
+// Serializing per operator closes the window: each pass now starts after the
+// previous one has committed its rows, so it sees them and skips.
+const pingQueue = createSerialQueue();
+
+function queueBeneficiaryPings(userId, operatorEmail, recipients) {
+  return pingQueue.run(userId, () =>
+    processBeneficiaryPings(userId, operatorEmail, recipients),
+  );
+}
+
 // Run the ping decision for every recipient of one operator. Called by the
 // daily sweep, at activation (so first contact is established the moment a
 // switch is armed, not up to a day later), and when recipients are edited on
 // an armed switch (so a newly added beneficiary is contacted immediately).
-// pingAction() makes it idempotent — already-verified addresses are skipped
-// until their annual renewal is due.
+// Always reached through queueBeneficiaryPings() — see the note above.
 async function processBeneficiaryPings(userId, operatorEmail, recipients) {
   const seen = new Set();
   for (const recipient of recipients) {
     const addr = recipient.to || recipient.address;
     if (!addr) continue;
+
+    // Opted out of address confirmation. Nothing is sent to them until the
+    // switch fires. Note this does NOT suppress the pre-fire warning: that
+    // only goes out once the operator has been silent for months and is
+    // probably dead, which is a different question from telling a living
+    // person's beneficiary that they have been listed.
+    if (recipient.contactChecks === false) continue;
+
     const emailHash = hashEmail(addr);
     if (seen.has(emailHash)) continue;
     seen.add(emailHash);
@@ -1203,7 +1240,8 @@ router.post("/emails", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const userEmail = req.user.email;
-    const { emailAddress, emailContent, emailPayload, emailIndex } = req.body;
+    const { emailAddress, emailContent, emailPayload, emailIndex, contactChecks } =
+      req.body;
 
     // Get password from request (needed for decryption)
     const password = req.body.password;
@@ -1241,6 +1279,12 @@ router.post("/emails", authenticateToken, async (req, res) => {
       to: emailAddress,
       subject: "Important Message from " + userEmail,
       body: emailContent,
+      // Whether this recipient is asked to confirm their address. Per
+      // recipient, because the trade-off is: some beneficiaries can be told
+      // they are listed, and some must learn nothing until the message
+      // arrives. Only an explicit false disables it — anything else (absent,
+      // undefined, a recipient saved before this option existed) means on.
+      contactChecks: contactChecks !== false,
       ...(emailPayload && { payload: emailPayload }),
     };
 
@@ -1353,6 +1397,7 @@ router.post("/beneficiary-status", authenticateToken, async (req, res) => {
       );
       beneficiaries.push({
         address: addr,
+        contactChecksEnabled: email.contactChecks !== false,
         pingSentAt: toIso(ping?.ping_sent_at),
         ackAt: toIso(ping?.ack_at),
         operatorAlertedAt: toIso(ping?.operator_alerted_at),
@@ -1736,7 +1781,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
     // armed — never-verified addresses get a first-contact ping now instead
     // of whenever the daily sweep next runs. Non-blocking: activation must
     // not fail because a ping could not be sent.
-    processBeneficiaryPings(userId, userEmail, emails).catch((error) =>
+    queueBeneficiaryPings(userId, userEmail, emails).catch((error) =>
       console.error(
         `❌ PING: First-contact pass after activation failed for ${userEmail}:`,
         error,

@@ -29,6 +29,67 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 4. **Check-in**: Click links in periodic check-in emails to stay active
 5. **Automatic Trigger**: If you don't check in, recipient emails are sent automatically
 
+### Arming requires the first check-in
+
+Deploying does not start the countdown. The switch goes to **PENDING** and
+sends you a check-in email straight away; clicking that link is what arms it.
+This is deliberate — it proves the whole loop (mail delivery, link
+reachability, token handling) end to end before anything is allowed to fire.
+A pending switch cannot fire and cannot escalate to your recipients.
+
+### Changing recipients while the switch is armed
+
+Adding, editing, and deleting recipients all take effect on an armed switch
+**immediately**, including after a restart. You do not need to disarm and
+re-arm to change who receives your messages.
+
+The recipient table is the delivery list — an address listed there is one
+that will be sent to, and a deleted one stops. Each row shows, underneath the
+address, whether that recipient has confirmed their address.
+
+One guardrail: you cannot delete your *last* remaining recipient while the
+switch is armed. A switch with nobody to notify should not be armed at all —
+disarm it first.
+
+### Address confirmation (per recipient)
+
+Deploy asks each recipient to confirm their address with a one-click link —
+once when the switch is armed, and once a year after that. Their click is the
+only real proof the address still reaches a living person; a domain that
+resolves today proves nothing about six years from now. If a recipient stops
+answering, you are alerted while you are still around to fix it.
+
+The confirmation email says only that you have listed them and that a message
+may come someday. It never reveals your message, your payload, or why.
+
+It is **on by default and should usually stay on**, but it can be turned off
+per recipient in that recipient's message editor — for the case where someone
+must learn nothing until the message arrives. Turning it off means that
+address is never verified: if it quietly dies, you will not find out.
+
+Turning it off does **not** affect delivery. An opted-out recipient still
+receives your message when the switch fires. It also does not suppress the
+pre-fire warning, which only goes out after months of operator silence.
+
+### While the computer is switched off
+
+Deploy only runs while its host computer is running. That has three
+consequences worth understanding before you rely on it:
+
+- **Check-in emails are not stockpiled.** If the machine is off for two days,
+  you do not receive two days of missed check-in emails when it comes back.
+  Nothing is queued; the schedule simply resumes.
+- **A deadline that passes while the machine is off is still honoured.**
+  Deploy stores the deadline, not a running clock. On restart it compares the
+  stored deadline against the real time — if the deadline passed while the
+  machine was off, the switch fires within moments of the machine coming back
+  up. Being switched off delays the trigger; it does not cancel it.
+- **Being off is not a check-in.** Time spent powered down counts as silence,
+  exactly like time spent ignoring check-in emails.
+
+For a switch you actually depend on, run it on hardware that stays on — a
+Start9 server or equivalent — rather than a laptop that sleeps.
+
 ## Quick Start
 
 ### Prerequisites

@@ -68,6 +68,30 @@ start9/                    # Packaging scripts for Start9 OS deployment
 - **Trigger email carries the payload, not the manual**: the encrypted payload (and its QR) ride in the email itself, but decryption instructions are links to the Legacy site — the decrypt page, the downloadable offline copy, and the full reimplementation spec in FAQ item 10 of the Legacy_Encryption repo (the former `utils/recoverySpec.js` content moved there in v2.0.10). It sends from a dedicated sender when `TRIGGER_EMAIL_*`/`TRIGGER_SMTP_*` are configured, with the subject prefixed `CRITICAL:` — subjects use plain severity words, never emoji.
 
 - **Arming requires the first check-in (v2.1.0)**: activation puts the switch in a PENDING state — the arming check-in email is sent immediately, but no countdown exists until the operator clicks it, proving the whole loop (email delivery, link/Tor reachability, token handling) end to end. Pending switches cannot fire or escalate, re-send the arming email every check-in interval, and survive restarts (persisted as an active session with `expires_at IS NULL`). The `/checkin` handler's timer rebuild doubles as the pending→armed transition.
+- **Recipient edits are live on an armed switch (v2.0.11, surfaced in
+  v2.1.1)**: `syncActiveSwitchRecipients()` updates every place the fire
+  paths read — the `userEmails` map, `switchData.settings.emails`, and the
+  SECRET_KEY-encrypted envelope that post-restart recovery fires from. Fire
+  paths read `userEmails.get(userEmail)` at fire time, never a closure
+  snapshot. `/timer-status` returns `armedRecipients` from the same source
+  and the recipient table is the delivery list — no separate panel restates
+  it.
+- **Per-recipient address confirmation (v2.1.1)**: `contactChecks` on the
+  email record (default on; only an explicit `false` disables). It lives on
+  the email object rather than in a settings table so it travels inside the
+  SECRET_KEY-encrypted envelope and is therefore available to the daily sweep
+  after a restart, with no schema change. Opting out suppresses ONLY the
+  confirmation ping — `executeDeadmanActivation` and the pre-fire warning
+  ignore the flag entirely. That boundary is deliberate: confirmation
+  happens while the operator is alive, the pre-fire warning only after
+  months of silence.
+- **Beneficiary contact passes are serialized per operator (v2.1.1)**:
+  `pingAction()` is idempotent only against *committed* state — it returns
+  "send" whenever the `beneficiary_pings` row is absent, and that row is not
+  written until the send resolves. Overlapping passes (two quick recipient
+  edits, or an edit during the daily sweep) therefore all read "never
+  contacted" and all send. `queueBeneficiaryPings()` chains passes per
+  userId; call it, never `processBeneficiaryPings()` directly.
 - **Out-of-band alerting (v2.1.0)**: `utils/notify.js` pushes to an ntfy topic (config field or `NTFY_TOPIC`/`NTFY_SERVER` env; unset = disabled) so failures reach the operator on a path independent of email and Tor: SMTP down/recovered, check-in send failures, missed check-ins (≥2), pre-fire warning, fire + delivery failures, save failures, dead beneficiary addresses. Repeats are throttled per issue key.
 
 ### Email Flow

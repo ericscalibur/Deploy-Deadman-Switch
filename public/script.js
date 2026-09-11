@@ -296,7 +296,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const addressLine = document.createElement("div");
       addressLine.textContent = `${index + 1}. ${email.address}`;
       emailCell.appendChild(addressLine);
-      // Filled in by loadBeneficiaryStatus() once ping data arrives
+      // Whether this beneficiary has confirmed their address, when contact
+      // checks are in use. Filled in by loadBeneficiaryStatus(); left empty
+      // (and hidden) when there is nothing true to say.
       const contactLine = document.createElement("small");
       contactLine.className = "last-contact";
       contactLine.dataset.address = email.address || "";
@@ -375,6 +377,60 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  // ---- Fired-switch notice (tester report #3) ----------------------------------
+  // The notice is cleared only by the operator. Dismissal is remembered
+  // against the activation timestamp, so a page reload does not resurrect a
+  // notice already read, but a *new* activation always shows again.
+  function activationDismissKey(activationTime) {
+    return `activationAcknowledged:${activationTime || "unknown"}`;
+  }
+
+  function showActivationNotice(data) {
+    const notice = document.getElementById("activation-notice");
+    if (!notice) return;
+
+    const activationTime = data.activationTime || null;
+    if (localStorage.getItem(activationDismissKey(activationTime)) === "true") {
+      notice.style.display = "none";
+      return;
+    }
+
+    const detail = document.getElementById("activation-notice-detail");
+    if (detail) {
+      const when = activationTime
+        ? new Date(activationTime).toLocaleString()
+        : "an earlier time (exact time unavailable)";
+      const count = data.emailsSent;
+      const delivered =
+        typeof count === "number" && count > 0
+          ? `${count} message${count === 1 ? "" : "s"} sent`
+          : "delivery attempted";
+      detail.textContent =
+        `Your deadman switch fired on ${when} — ${delivered}. ` +
+        `It fired because no check-in was received before the deadline.`;
+    }
+
+    notice.style.display = "block";
+
+    const dismiss = document.getElementById("activation-notice-dismiss");
+    if (dismiss && !dismiss.dataset.bound) {
+      dismiss.dataset.bound = "true";
+      dismiss.addEventListener("click", () => {
+        localStorage.setItem(
+          activationDismissKey(notice.dataset.activationTime || null),
+          "true",
+        );
+        notice.style.display = "none";
+      });
+    }
+    notice.dataset.activationTime = activationTime || "";
+  }
+
+  function hideActivationNotice() {
+    const notice = document.getElementById("activation-notice");
+    if (notice) notice.style.display = "none";
+  }
+
   // Load emails from localStorage and populate the table
   function loadEmails() {
     const emails = JSON.parse(localStorage.getItem("emails") || "[]");
@@ -398,6 +454,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (!response.ok) return;
       const data = await response.json();
       for (const b of data.beneficiaries || []) {
+        // Absence means on — that is what every server before this option
+        // existed did, and what every recipient saved then expected.
+        const contactChecks = b.contactChecksEnabled !== false;
         const el = document.querySelector(
           `.last-contact[data-address="${CSS.escape(b.address)}"]`,
         );
@@ -408,14 +467,24 @@ document.addEventListener("DOMContentLoaded", async () => {
             month: "short",
             day: "numeric",
           });
+        el.className = "last-contact";
         if (b.ackAt) {
-          el.textContent = `Last contact: ${fmt(b.ackAt)}`;
+          // The only real proof this address reaches a living person: they
+          // clicked. Worth stating even when contact checks are since off.
+          el.textContent = `Contact confirmed by recipient ${fmt(b.ackAt)}`;
           el.classList.add("contact-ok");
         } else if (b.pingSentAt) {
-          el.textContent = `Contact check sent ${fmt(b.pingSentAt)} — awaiting reply`;
+          el.textContent = `Contact check sent ${fmt(b.pingSentAt)} — not yet confirmed`;
+          el.classList.add("contact-pending");
+        } else if (contactChecks) {
+          el.textContent = "Not yet confirmed by recipient";
           el.classList.add("contact-pending");
         } else {
-          el.textContent = "No contact yet — first annual check pending";
+          // Deliberately not being asked. Worth stating plainly — it is a
+          // non-default choice with a real consequence, and silence here
+          // would look like the confirmation was merely still pending.
+          el.textContent = "Address confirmation off — never verified";
+          el.classList.add("contact-off");
         }
       }
     } catch (e) {
@@ -499,6 +568,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   let deadmanActivationTime = null;
   let lastActivityTime = new Date();
   let deadmanSwitchActivated = false;
+  // Set once the server reports the switch has fired. Kept separate from
+  // deadmanSwitchActivated (which means "armed and counting") so a fired
+  // switch never renders as a dormant 00:00:00.
+  let deadmanSwitchFired = false;
   // Deployed but not yet armed: the backend holds the switch with no
   // countdown until the operator completes the first check-in email.
   let deadmanSwitchPending = false;
@@ -574,9 +647,24 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Update check-in countdown
     const checkinElement = document.getElementById("checkin-countdown");
+    // While PENDING there is no countdown to describe — the caption has to
+    // say what the operator must actually do, not label an empty timer.
+    const checkinCaption = document.getElementById("checkin-caption");
+    if (checkinCaption) {
+      if (deadmanSwitchPending) {
+        checkinCaption.textContent =
+          "Click the link in the email you just received";
+      } else if (deadmanSwitchFired) {
+        checkinCaption.textContent = "Switch has fired — no longer checking in";
+      } else {
+        checkinCaption.textContent = "Time until next check-in email";
+      }
+    }
     if (checkinElement) {
       if (deadmanSwitchPending) {
         checkinElement.textContent = "PENDING";
+      } else if (deadmanSwitchFired) {
+        checkinElement.textContent = "CLOSED";
       } else if (!deadmanSwitchActivated || !nextCheckinTime) {
         checkinElement.textContent = "00:00:00";
       } else {
@@ -595,6 +683,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (deadmanElement) {
       if (deadmanSwitchPending) {
         deadmanElement.textContent = "NOT ARMED";
+      } else if (deadmanSwitchFired) {
+        // The switch fired. "00:00:00" reads like a timer at rest and is
+        // exactly what made the activation state look like it disappeared.
+        deadmanElement.textContent = "ACTIVATED";
+        deadmanElement.className = "countdown deadman-activated";
       } else if (!deadmanSwitchActivated || !deadmanActivationTime) {
         deadmanElement.textContent = "00:00:00";
       } else {
@@ -638,6 +731,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (data.active) {
           // Update frontend with backend data
           deadmanSwitchActivated = true;
+          deadmanSwitchFired = false;
+          hideActivationNotice();
           deadmanSwitchPending = !!data.pending;
           lastActivityTime = new Date(data.lastActivity);
 
@@ -983,6 +1078,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (data.triggered) {
           // Deadman was triggered — clear switch state but keep email config
           deadmanSwitchActivated = false;
+          deadmanSwitchFired = true;
+          showActivationNotice(data);
           localStorage.removeItem("deadmanSwitchActivated");
           localStorage.removeItem("lastActivity");
           localStorage.removeItem("formSelections");
@@ -995,6 +1092,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         } else {
           // No deadman switch active
           deadmanSwitchActivated = false;
+          deadmanSwitchFired = false;
+          hideActivationNotice();
           localStorage.setItem("deadmanSwitchActivated", "false");
           updateButtonState("inactive");
         }

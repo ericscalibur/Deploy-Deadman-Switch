@@ -55,12 +55,19 @@
                 &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
                 service. Here’s how it works. You will receive a Check-In at
                 regular Intervals. When you receive the email, open it and click
-                the link to automatically log your activity. Additionally, if
-                you log in to your Deploy account, that activity is also logged.
-                If the Period of Inactivity elapses without any activity logged,
-                the Deadman Switch will activate and your emails will be sent.
-                All your data is encrypted until the final emails are sent. You
-                can send up to 20 emails.
+                the link to log your activity — clicking that link is the only
+                thing that resets the timer. If the Period of Inactivity elapses
+                without a check-in, the Deadman Switch will activate and your
+                emails will be sent. All your data is encrypted until the final
+                emails are sent. You can send up to 20 emails.
+                <br /><br />
+                &nbsp;&nbsp;&nbsp;&nbsp;Deploy also asks each recipient to
+                confirm their address with a one-click link — their click is the
+                only real proof the address still reaches them. It is on by
+                default and we recommend leaving it that way; with it off, an
+                address that has quietly died is never discovered. You can turn
+                it off for any individual recipient when you edit their message,
+                if that person must learn nothing until it arrives.
             </p>
 
             <form id="setup-form">
@@ -131,8 +138,25 @@
                 </fieldset>
             </form>
 
+            <!-- Fired-switch notice. Stays until the operator clicks
+                 "I understand" — activation is the one event that must never
+                 scroll past unseen, so it is never dismissed on a timer. -->
+            <div id="activation-notice" style="display: none">
+                <h2 id="activation-notice-title">
+                    DEADMAN SWITCH ACTIVATED
+                </h2>
+                <p id="activation-notice-detail"></p>
+                <p class="activation-notice-sub">
+                    Your messages have been delivered. This switch is now
+                    closed and is no longer counting down.
+                </p>
+                <button id="activation-notice-dismiss" type="button">
+                    I understand — dismiss this notice
+                </button>
+            </div>
+
             <div id="countdown-section">
-                <h2>Status & Countdowns</h2>
+                <h2>Status &amp; Countdowns</h2>
 
                 <div class="countdown-container">
                     <div class="countdown-card checkin-card">
@@ -140,7 +164,9 @@
                         <div id="checkin-countdown" class="countdown">
                             --:--:--
                         </div>
-                        <small>Time until next check-in email</small>
+                        <small id="checkin-caption"
+                            >Time until next check-in email</small
+                        >
                     </div>
 
                     <div class="countdown-card deadman-card">

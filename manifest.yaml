@@ -1,8 +1,37 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.0
+version: 2.1.1
 release-notes: |
-  - Arming now requires completing the first check-in. Deploying a switch
+  - Address confirmation can now be turned off for an individual
+    recipient, in that recipient's message editor. Some beneficiaries can
+    be told they have been listed; some must learn nothing until the
+    message arrives. It stays ON by default and should usually stay on —
+    the recipient's click is the only real proof their address still
+    reaches them. Turning it off does not affect delivery: that recipient
+    still receives your message when the switch fires. The recipient table
+    shows which addresses have been confirmed and which are deliberately
+    unverified.
+  - The ACTIVATION notice now stays on screen until you dismiss it. It
+    previously appeared for about two seconds before the display reset to
+    00:00:00, so the one event the whole system exists to announce could
+    vanish before it was read. The countdowns now read ACTIVATED and
+    CLOSED after a switch fires instead of resetting to zero.
+  - Fix: a recipient could receive the "you have been listed as a trusted
+    contact" email two or three times from a single edit. Each recipient
+    edit starts a contact pass, and passes that overlapped all read
+    "never contacted" before any of them recorded the send. Contact passes
+    are now serialized per operator. Duplicate unexplained mail is exactly
+    what makes a beneficiary dismiss this as spam, and their click is the
+    only real confirmation an address works.
+  - A restart no longer sends the arming reminder with the URGENT subject.
+    URGENT means "you have been ignoring this", not "the server rebooted".
+  - While a switch is PENDING, the check-in caption now says what to do
+    ("Click the link in the email you just received") instead of labelling
+    a countdown that is not running.
+  - Documented what happens while the host computer is off: check-in
+    emails are not stockpiled, but a deadline that passes while the
+    machine is off is still honoured and fires on restart.
+  - (2.1.0) Arming now requires completing the first check-in. Deploying a switch
     holds it in PENDING: the first check-in email is sent immediately, and
     only clicking its link arms the switch and starts the countdown —
     proving the whole loop (email delivery, link reachability over Tor,
