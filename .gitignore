@@ -74,3 +74,12 @@ build/
 
 # Test artifacts
 qr-test.png
+
+# Private correspondence drafts — working notes for replies to testers.
+# Untracked by intent; listed here so a stray `git add -A` cannot publish
+# someone else's report or an unsent reply to a public repo.
+*-REPLY-DRAFT.md
+
+# Claude Code local settings and session scratch output
+.claude/settings.local.json
+Claude outputs/
