@@ -585,9 +585,9 @@ This is an automated message from Deploy Deadman Switch.
 
             <p><strong>1. On a SeedSigner &mdash; keeps the seed phrase cold</strong><br>
             <a href="${seedsignerUrl}">SeedSigner with Legacy Encryption</a><br>
-            On the device choose <em>Legacy Encryption &rarr; Decrypt Seed
-            Phrase</em>, scan the QR code above, then enter the benefactor key
-            followed by the beneficiary key. The recovered words appear on the
+            On the device go to <em>Tools &rarr; Legacy Encryption &rarr;
+            Decrypt Seed Phrase</em>, scan the QR code above, then enter the
+            benefactor key followed by the beneficiary key. The recovered words appear on the
             device screen and are never shown on, or typed into, a computer.
             This route needs a SeedSigner running that firmware; the link
             has the image to flash, its checksum, and what hardware it
@@ -616,9 +616,9 @@ phrase never touches a computer. Otherwise use the second.
 
 1. On a SeedSigner - keeps the seed phrase cold
    SeedSigner with Legacy Encryption: ${seedsignerUrl}
-   On the device choose Legacy Encryption -> Decrypt Seed Phrase, scan the QR
-   code in this email, then enter the benefactor key followed by the
-   beneficiary key. The recovered words appear on the device screen and are
+   On the device go to Tools -> Legacy Encryption -> Decrypt Seed Phrase,
+   scan the QR code in this email, then enter the benefactor key followed by
+   the beneficiary key. The recovered words appear on the device screen and are
    never shown on, or typed into, a computer. This route needs a SeedSigner
    running that firmware; the link has the image to flash, its checksum, and
    what hardware it runs on.

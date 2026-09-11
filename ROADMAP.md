@@ -28,6 +28,19 @@ automatically with the next version bump.
   which is the more confusing one because the operator remembers when they
   last checked in. Observed 2026-09-10 from UTC-6.
 
+- **Check whether the SeedSigner main-menu entry actually renders**: at
+  `2e19bf4` the fork adds "Legacy Encryption" to BOTH the Tools menu
+  (`tools_views.py`) and the main menu (`view.py`,
+  `[SCAN, SEEDS, TOOLS, SETTINGS, LEGACY]`), but only the Tools path was
+  observed on hardware 2026-09-11. Either the top-level entry is redundant
+  and should be removed, or the main menu is not rendering its fifth button
+  — worth knowing which before more people flash the published image. The
+  trigger email documents the Tools path, which is confirmed working.
+- **`INTEGRATION.md` menu instructions are wrong**: it tells the reader to
+  wire the entry into `MainMenuView`, but the shipped firmware reaches it
+  through Tools. Anyone following the guide to build their own image gets a
+  different menu layout from the release.
+
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
   next email goes out. Observed live 2026-09-03 (config save → restart →
