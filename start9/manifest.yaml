@@ -1,7 +1,16 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.6
+version: 2.1.7
 release-notes: |
+  - Beneficiaries are no longer contacted when you deploy. They are
+    contacted when the switch actually ARMS — when you click the link in
+    your first check-in email. Deploying only puts the switch in PENDING;
+    it is the dry run that proves the check-in loop works, and you may
+    never complete it. Contacting people at that point tells them they are
+    named in a switch that may never exist, and it cannot be taken back.
+    This also covers two quieter paths: adding a recipient to a pending
+    switch, and the daily address-check sweep, both of which could reach a
+    beneficiary before the switch had armed.
   - The first-contact template shown in the message editor is now the real
     email, served by the server from the same code that sends it. It was a
     copy maintained by hand, which would have drifted silently the first

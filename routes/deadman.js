@@ -560,15 +560,18 @@ async function syncActiveSwitchRecipients(userEmail, emails) {
     `🔄 SYNC: Armed switch recipients updated for ${userEmail} (${emails.length} recipients)`,
   );
 
-  // A beneficiary added to an armed switch gets first contact immediately;
-  // pingAction() skips everyone already verified.
-  queueBeneficiaryPings(switchData.userId, userEmail, emails).catch(
-    (error) =>
-      console.error(
-        `❌ PING: First-contact pass after recipient edit failed for ${userEmail}:`,
-        error,
-      ),
-  );
+  // A beneficiary added to an ARMED switch gets first contact immediately;
+  // pingAction() skips everyone already verified. A pending switch contacts
+  // nobody — same reason activation does not: it may never arm.
+  if (!switchData.pending) {
+    queueBeneficiaryPings(switchData.userId, userEmail, emails).catch(
+      (error) =>
+        console.error(
+          `❌ PING: First-contact pass after recipient edit failed for ${userEmail}:`,
+          error,
+        ),
+    );
+  }
 
   return true;
 }
@@ -749,6 +752,11 @@ async function runBeneficiaryPingSweep() {
     const sessions = await userService.getAllRecoverableSessions();
     for (const session of sessions) {
       if (!session.server_encrypted_emails) continue;
+
+      // A pending switch is an active row with no deadline. It has not
+      // armed, so it must not contact anyone — otherwise a switch left
+      // un-armed overnight would be pinged by this sweep instead.
+      if (!session.expires_at) continue;
 
       let recipients;
       try {
@@ -1799,16 +1807,12 @@ router.post("/activate", authenticateToken, async (req, res) => {
       );
     }
 
-    // Establish contact with every beneficiary the moment the switch is
-    // armed — never-verified addresses get a first-contact ping now instead
-    // of whenever the daily sweep next runs. Non-blocking: activation must
-    // not fail because a ping could not be sent.
-    queueBeneficiaryPings(userId, userEmail, emails).catch((error) =>
-      console.error(
-        `❌ PING: First-contact pass after activation failed for ${userEmail}:`,
-        error,
-      ),
-    );
+    // No beneficiary contact here. Deploying only puts the switch in
+    // PENDING — it is the dry run that proves the check-in loop, and the
+    // operator may never complete it. Contacting beneficiaries at this
+    // point tells third parties they are named in a switch that may never
+    // exist, and that cannot be taken back. First contact happens when the
+    // switch actually arms, in /checkin.
 
     // Arming dry run: the first check-in email goes out right now. Awaited
     // so the response can say honestly whether it was sent — if it wasn't,
@@ -2917,6 +2921,24 @@ router.get("/checkin/:token", async (req, res) => {
       console.log(
         `🟢 ARMED: First check-in completed for ${userEmail} — countdown started`,
       );
+
+      // First contact happens HERE, not at deploy: the switch now really
+      // exists and is counting down. Non-blocking — arming must not fail
+      // because a ping could not be sent.
+      const armedSwitch = activeDeadmanSwitches.get(userEmail);
+      if (armedSwitch) {
+        queueBeneficiaryPings(
+          armedSwitch.userId,
+          userEmail,
+          getRecipientsFor(userEmail, armedSwitch),
+        ).catch((error) =>
+          console.error(
+            `❌ PING: First-contact pass after arming failed for ${userEmail}:`,
+            error,
+          ),
+        );
+      }
+
       notify(
         `Switch ARMED for ${userEmail} — first check-in completed, the whole loop is verified and the countdown is now running.`,
         { tags: "white_check_mark,shield" },

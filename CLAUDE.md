@@ -76,6 +76,14 @@ start9/                    # Packaging scripts for Start9 OS deployment
   snapshot. `/timer-status` returns `armedRecipients` from the same source
   and the recipient table is the delivery list — no separate panel restates
   it.
+- **Beneficiaries are contacted on ARMING, never on deploy (v2.1.7)**:
+  deploying only creates a PENDING switch, which may never arm. Three paths
+  could reach a beneficiary before that: the activation handler, a recipient
+  edit via `syncActiveSwitchRecipients()`, and `runBeneficiaryPingSweep()`
+  (whose query is `is_active = 1`, and a pending session is active with
+  `expires_at IS NULL`). All three are now gated; first contact fires from
+  the `wasPending` branch in `/checkin`. Any new ping path must respect the
+  same rule — contacting a third party cannot be undone.
 - **Per-recipient address confirmation (v2.1.1)**: `contactChecks` on the
   email record (default on; only an explicit `false` disables). It lives on
   the email object rather than in a settings table so it travels inside the
