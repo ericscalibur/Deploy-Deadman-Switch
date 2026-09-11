@@ -91,14 +91,6 @@
         <div class="container">
             <h1>Edit Email</h1>
             <form id="edit-email-form">
-                <label for="email-address">Email Address:</label>
-                <input
-                    type="email"
-                    id="email-address"
-                    name="email-address"
-                    required
-                /><br /><br />
-
                 <!-- Per-recipient, because the trade-off is per-recipient: a
                      lawyer can be told they are listed; a family member you are
                      leaving a secret to may need to learn nothing until the
@@ -125,7 +117,14 @@
                         and if it quietly dies you will not find out.
                     </small>
                 </div>
-                <br />
+                <label for="email-address">Email Address:</label>
+                <input
+                    type="email"
+                    id="email-address"
+                    name="email-address"
+                    required
+                /><br /><br />
+
 
                 <label for="email-content">Email Content:</label>
                 <br />
@@ -176,8 +175,9 @@
                     <button type="button" class="qr-btn" id="stop-scan-btn" style="margin-top:8px">Stop</button>
                 </div>
 
-                <br /><br />
-                <button type="submit" id="save-email-button">Save</button>
+                <div class="form-actions">
+                    <button type="submit" id="save-email-button">Save</button>
+                </div>
             </form>
         </div>
 

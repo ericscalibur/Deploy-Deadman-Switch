@@ -1,7 +1,29 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.1
+version: 2.1.2
 release-notes: |
+  - The recipient table no longer flickers. A background sync rebuilt the
+    table every 5 seconds even when nothing had changed, blanking each
+    recipient's status line and shifting everything below it. It now
+    redraws only on an actual change, and the status line holds its height.
+  - Deploying or aborting no longer flickers between states. The 5-second
+    sync could not see a switch the server had not finished creating, so it
+    reported "not armed" mid-request and flipped the button back. The
+    button now shows "Deploying..." while the request is in flight and is
+    disabled, so the one action that should never be issued twice cannot be.
+  - Fix: the background sync timer was never cleared, so a new one started
+    on every login and again after deployment. They accumulated, multiplying
+    requests over Tor and leaving several writers fighting over the
+    dashboard's state.
+  - The trigger email now leads with the decryption tool rather than the
+    instructions, and offers two routes: a SeedSigner running Legacy
+    Encryption, where the seed phrase is recovered on the device and never
+    touches a computer, or the Legacy Decryption tool in a browser. The
+    cold route is stated as needing that hardware, so nobody starts down it
+    expecting a quick step.
+  - The per-recipient address-confirmation control now sits in the corner of
+    the message editor instead of spanning the full width above the fields
+    it qualifies.
   - Address confirmation can now be turned off for an individual
     recipient, in that recipient's message editor. Some beneficiaries can
     be told they have been listed; some must learn nothing until the

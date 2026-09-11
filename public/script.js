@@ -215,6 +215,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (!confirmed) return;
 
+    // Hold the 5s sync off the button until the server has actually created
+    // the switch, and say plainly that work is happening — over Tor this
+    // request is not instant, and an idle-looking button invites a second
+    // click on the one action that should never be issued twice.
+    switchMutationInFlight = true;
+    setButtonBusy("Deploying…");
+
     try {
       const password = localStorage.getItem("userPassword");
       const requestData = {
@@ -257,6 +264,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     } catch (error) {
       alert("Failed to deploy deadman switch");
+    } finally {
+      // Released even on failure, or the dashboard would stop syncing.
+      switchMutationInFlight = false;
+      clearButtonBusy();
+      syncWithBackend();
     }
   }
 
@@ -431,11 +443,41 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (notice) notice.style.display = "none";
   }
 
-  // Load emails from localStorage and populate the table
-  function loadEmails() {
+  // Load emails from localStorage and populate the table.
+  //
+  // syncWithBackend() runs every 5s and calls this on every tick while no
+  // switch is armed. Rebuilding the table unconditionally meant each tick
+  // tore down the rows, leaving the contact subtext blank until the async
+  // status fetch refilled it — so the line flickered and everything below
+  // it jumped, twelve times a minute. Only touch the DOM when the list has
+  // actually changed.
+  let renderedEmailsSignature = null;
+  let lastStatusFetch = 0;
+
+  function emailsSignature(emails) {
+    return JSON.stringify(
+      emails.map((e) => [e.address || "", e.contactChecks !== false]),
+    );
+  }
+
+  function loadEmails(options = {}) {
     const emails = JSON.parse(localStorage.getItem("emails") || "[]");
-    populateEmailsTable(emails);
-    loadBeneficiaryStatus();
+    const signature = emailsSignature(emails);
+    const changed = signature !== renderedEmailsSignature;
+
+    if (changed || options.force) {
+      renderedEmailsSignature = signature;
+      populateEmailsTable(emails);
+    }
+
+    // Contact status only changes when a recipient clicks their link, so it
+    // does not need re-fetching every 5s — especially over Tor, and
+    // especially carrying the decryption password.
+    const now = Date.now();
+    if (changed || options.force || now - lastStatusFetch > 60000) {
+      lastStatusFetch = now;
+      loadBeneficiaryStatus();
+    }
   }
 
   // Annotate each recipient row with its annual-ping contact status.
@@ -505,7 +547,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await response.json();
         const emails = data.emails || [];
         localStorage.setItem("emails", JSON.stringify(emails));
+        renderedEmailsSignature = emailsSignature(emails);
         populateEmailsTable(emails);
+        lastStatusFetch = Date.now();
         loadBeneficiaryStatus();
       } else {
         loadEmails();
@@ -568,6 +612,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   let deadmanActivationTime = null;
   let lastActivityTime = new Date();
   let deadmanSwitchActivated = false;
+  let syncInterval = null;
+  let visibilityHandlerBound = false;
+  // True while an activate/deactivate request is in flight. The 5s sync
+  // cannot know about a switch the server has not finished creating, so
+  // without this it reports "not armed" mid-request and flips the button
+  // back — the switch appears to arm, disarm, and arm again.
+  let switchMutationInFlight = false;
   // Set once the server reports the switch has fired. Kept separate from
   // deadmanSwitchActivated (which means "armed and counting") so a fired
   // switch never renders as a dormant 00:00:00.
@@ -718,6 +769,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to sync with backend timer status
   let sessionExpiredNotified = false;
   async function syncWithBackend() {
+    if (switchMutationInFlight) return;
     try {
       const response = await fetch("/deadman/timer-status", {
         method: "GET",
@@ -836,15 +888,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Start updating every second
     checkinInterval = setInterval(updateCountdowns, 1000);
 
-    // Sync with backend every 5 seconds to stay current
-    setInterval(syncWithBackend, 5000);
+    // Sync with backend every 5 seconds to stay current.
+    //
+    // This interval used to be created without being stored, so it could
+    // never be cleared — and startCountdownTimers() runs on login AND after
+    // activation, so the loops accumulated. Each extra loop is another
+    // request every 5s over Tor, and another writer racing to set the
+    // button's state.
+    if (syncInterval) clearInterval(syncInterval);
+    syncInterval = setInterval(syncWithBackend, 5000);
 
-    // Sync immediately when page becomes visible (user returns from check-in)
-    document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) {
-        syncWithBackend();
-      }
-    });
+    // Sync immediately when page becomes visible (user returns from
+    // check-in). Registered once — re-adding it per call stacked duplicate
+    // listeners the same way.
+    if (!visibilityHandlerBound) {
+      visibilityHandlerBound = true;
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) {
+          syncWithBackend();
+        }
+      });
+    }
   }
 
   // Function to log activity (resets deadman timer)
@@ -1102,8 +1166,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Function to update button state based on deadman status
+  let currentButtonState = null;
+
+  // Busy state is presentational only: it never becomes currentButtonState,
+  // so the real state is restored intact once the request settles.
+  function setButtonBusy(label) {
+    if (!saveSettingsButton) return;
+    saveSettingsButton.disabled = true;
+    saveSettingsButton.textContent = label;
+  }
+
+  function clearButtonBusy() {
+    if (!saveSettingsButton) return;
+    saveSettingsButton.disabled = false;
+    const restore = currentButtonState;
+    currentButtonState = null; // force the repaint we actually want
+    updateButtonState(restore || "inactive");
+  }
+
   function updateButtonState(state) {
     if (!saveSettingsButton) return;
+    // Rewriting the same state repaints the button for no reason; with more
+    // than one writer that is visible as flicker.
+    if (state === currentButtonState) return;
+    currentButtonState = state;
 
     switch (state) {
       case "active":
@@ -1137,6 +1223,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (!confirmed) return;
 
+    // Same race as deployment, mirrored: while the request is in flight the
+    // server still reports an armed switch, so the sync would flip the
+    // button back to Abort mid-abort.
+    switchMutationInFlight = true;
+    setButtonBusy("Aborting…");
+
     try {
       const response = await fetch("/deadman/deactivate", {
         method: "POST",
@@ -1162,6 +1254,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     } catch (error) {
       alert("Failed to deactivate deadman switch");
+    } finally {
+      switchMutationInFlight = false;
+      clearButtonBusy();
+      syncWithBackend();
     }
   }
 

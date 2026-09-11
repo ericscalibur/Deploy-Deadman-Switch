@@ -519,6 +519,10 @@ body {
     margin-top: 2px;
     font-size: 0.78em;
     color: #666;
+    /* The line is filled by an async fetch after the row renders. Reserving
+       its height means arriving text cannot shove the rest of the page
+       down — the row is the same height empty or full. */
+    min-height: 1.2em;
 }
 
 .last-contact.contact-ok {
@@ -534,17 +538,29 @@ body {
     font-style: italic;
 }
 
-.last-contact:empty {
-    display: none;
-}
-
-/* Per-recipient address-confirmation toggle in the email editor */
+/* Per-recipient address-confirmation toggle in the email editor.
+   Floated into the empty space to the right of the address field and
+   content box — full width it dwarfed the fields it qualifies, which
+   read as more important than the message itself. */
 .contact-check-option {
+    float: right;
+    width: 310px;
+    max-width: 100%;
     background-color: #f7f7f9;
     border: 1px solid #ddd;
     border-radius: 6px;
-    padding: 10px 12px;
-    margin-top: 4px;
+    padding: 14px 16px;
+    margin: 0 0 18px 28px;
+}
+
+/* Below this the left column and the card would fight for room, so the
+   card goes back to full width above the fields. */
+@media (max-width: 860px) {
+    .contact-check-option {
+        float: none;
+        width: auto;
+        margin: 0 0 16px 0;
+    }
 }
 
 .contact-check-option .checkbox-label {
@@ -566,9 +582,16 @@ body {
 
 .contact-check-option small {
     display: block;
-    margin-top: 6px;
+    margin-top: 8px;
     color: #555;
-    line-height: 1.4;
+    line-height: 1.45;
+    font-size: 0.82em;
+}
+
+/* The Save row must not ride up beside the floated card. */
+.form-actions {
+    clear: both;
+    padding-top: 22px;
 }
 
 /* ---- Fired-switch notice (tester report #3) -------------------------------------

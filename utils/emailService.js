@@ -559,25 +559,78 @@ This is an automated message from Deploy Deadman Switch.
           "https://github.com/ericscalibur/Legacy_Encryption/blob/main/Legacy-offline.html";
         const faqUrl =
           "https://ericscalibur.github.io/Legacy_Encryption/FAQ.html";
+        // The airgapped decryption route: a SeedSigner running the Legacy
+        // fork decrypts on-device, so the seed phrase is never typed into or
+        // displayed on an internet-capable computer. Listed first because a
+        // beneficiary decrypting a seed in a browser has already lost the
+        // property cold storage exists to protect. Points at a branch, so
+        // Points at /releases/latest, not the source tree: a beneficiary
+        // needs a flashable signed image with a verifiable hash, not a repo
+        // that has to be built with Docker. /latest rather than a pinned tag
+        // so the link keeps working as the firmware is updated — but it is
+        // only as good as the newest published release, so this link is dead
+        // until a release exists.
+        const seedsignerUrl =
+          "https://github.com/ericscalibur/seedsigner/releases/latest";
+        // Tool links lead, instructions follow. The reader has just been told
+        // someone died; the first thing they need is the thing to open, not a
+        // paragraph about fields they cannot see yet.
         const specHtml = email.payload
           ? `
             <h3>How to decrypt</h3>
-            <p>To decrypt your seedphrase, paste the cypher text into the
-            Encrypted Seed Phrase field, enter your Beneficiary Key and the
-            Benefactor Key. Click 'Decrypt'.</p>
-            <p><a href="${decryptUrl}">Legacy Decryption</a> &mdash; or download the
+            <p>There are two ways. Use the first if you have a SeedSigner
+            running Legacy Encryption, or if one was left for you &mdash; it is
+            the only route where the seed phrase never touches a computer.
+            Otherwise use the second.</p>
+
+            <p><strong>1. On a SeedSigner &mdash; keeps the seed phrase cold</strong><br>
+            <a href="${seedsignerUrl}">SeedSigner with Legacy Encryption</a><br>
+            On the device choose <em>Legacy Encryption &rarr; Decrypt Seed
+            Phrase</em>, scan the QR code above, then enter the benefactor key
+            followed by the beneficiary key. The recovered words appear on the
+            device screen and are never shown on, or typed into, a computer.
+            This route needs a SeedSigner running that firmware; the link
+            has the image to flash, its checksum, and what hardware it
+            runs on.</p>
+
+            <p><strong>2. In the Legacy Decryption tool</strong><br>
+            <a href="${decryptUrl}">Legacy Decryption</a> &mdash; or download the
             <a href="${offlineUrl}">offline version</a> to run on a computer
-            with no internet connection.</p>
+            with no internet connection.<br>
+            Paste the cypher text into the Encrypted Seed Phrase field, enter
+            your Beneficiary Key and the Benefactor Key, then click
+            'Decrypt'.<br>
+            If you intend to keep these funds rather than move them
+            immediately, prefer the offline version, on a computer you can
+            erase afterwards.</p>
+
             <p>For more information see the <a href="${faqUrl}">FAQ</a>.</p>`
           : "";
         const specText = email.payload
           ? `
 How to decrypt
 
-To decrypt your seedphrase, paste the cypher text into the Encrypted Seed Phrase field, enter your Beneficiary Key and the Benefactor Key. Click 'Decrypt'.
+There are two ways. Use the first if you have a SeedSigner running Legacy
+Encryption, or if one was left for you - it is the only route where the seed
+phrase never touches a computer. Otherwise use the second.
 
-Legacy Decryption: ${decryptUrl}
-Offline version (download to run without internet): ${offlineUrl}
+1. On a SeedSigner - keeps the seed phrase cold
+   SeedSigner with Legacy Encryption: ${seedsignerUrl}
+   On the device choose Legacy Encryption -> Decrypt Seed Phrase, scan the QR
+   code in this email, then enter the benefactor key followed by the
+   beneficiary key. The recovered words appear on the device screen and are
+   never shown on, or typed into, a computer. This route needs a SeedSigner
+   running that firmware; the link has the image to flash, its checksum, and
+   what hardware it runs on.
+
+2. In the Legacy Decryption tool
+   Online: ${decryptUrl}
+   Offline (download to run on a computer with no internet connection):
+   ${offlineUrl}
+   Paste the cypher text into the Encrypted Seed Phrase field, enter your
+   Beneficiary Key and the Benefactor Key, then click 'Decrypt'.
+   If you intend to keep these funds rather than move them immediately, prefer
+   the offline version, on a computer you can erase afterwards.
 
 For more information see the FAQ: ${faqUrl}
 `
