@@ -78,9 +78,40 @@ describe("getInactivityMs", () => {
     assert.equal(getInactivityMs("13-months"), DAY); // exceeds max 12
     assert.equal(getInactivityMs("366-days"), DAY);  // exceeds max 365
   });
+
+  test("every way of saying one year is honoured, not defaulted", () => {
+    assert.equal(getInactivityMs("365-days"), 365 * DAY);
+    assert.equal(getInactivityMs("52-weeks"), 52 * WEEK);
+    assert.equal(getInactivityMs("12-months"), 12 * MONTH);
+  });
 });
 
 describe("validateTimeInterval", () => {
+  test("rejects check-in intervals the parser would silently default", () => {
+    assert.equal(validateTimeInterval("4-weeks", false).isValid, true);
+    assert.equal(validateTimeInterval("28-days", false).isValid, true);
+    for (const v of ["5-weeks", "29-days", "45-days", "52-weeks"]) {
+      const r = validateTimeInterval(v, false);
+      assert.equal(r.isValid, false, v);
+      assert.match(r.error, /4 weeks/);
+      // and the parser really would have defaulted it
+      assert.equal(getIntervalMs(v), 2 * HOUR, v);
+    }
+  });
+
+  test("rejects inactivity periods the parser would silently default", () => {
+    for (const v of ["365-days", "52-weeks", "12-months"]) {
+      assert.equal(validateTimeInterval(v, true).isValid, true, v);
+    }
+    // 366 days is already stopped by the per-unit cap; 13 months by its own.
+    assert.equal(validateTimeInterval("366-days", true).isValid, false);
+    assert.equal(validateTimeInterval("13-months", true).isValid, false);
+    // The parser honours everything validation lets through.
+    for (const v of ["365-days", "52-weeks", "12-months"]) {
+      assert.notEqual(getInactivityMs(v), DAY, v);
+    }
+  });
+
   test("rejects missing value", () => {
     assert.equal(validateTimeInterval(null).isValid, false);
     assert.equal(validateTimeInterval("").isValid, false);

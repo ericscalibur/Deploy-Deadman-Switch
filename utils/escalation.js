@@ -13,6 +13,20 @@ const DEFAULT_WARNING_MISSED_CHECKINS = 5;
 const DEFAULT_PING_INTERVAL_DAYS = 365;
 const DEFAULT_PING_ACK_GRACE_DAYS = 30;
 
+// The configured threshold assumes the inactivity period holds many check-in
+// intervals. When it does not (1-week check-ins with a 1-month deadline, or a
+// compressed test run), a fixed count would never be reached and the switch
+// would fire with no warning at all. Clamp the threshold so the warning goes
+// out no later than the second-to-last tick before the deadline (leaving one
+// tick for a resend), and always by the first tick when only one fits.
+function effectiveWarningThreshold({ threshold, checkinIntervalMs, inactivityMs }) {
+  if (!checkinIntervalMs || !inactivityMs || inactivityMs <= checkinIntervalMs) {
+    return Math.max(1, threshold);
+  }
+  const ticksBeforeFire = Math.ceil(inactivityMs / checkinIntervalMs) - 1;
+  return Math.max(1, Math.min(threshold, ticksBeforeFire - 1));
+}
+
 // Decide what to do about the pre-fire warning at a periodic check-in tick.
 // missedCheckins = consecutive intervals of operator silence (counted at
 // tick time; the tick itself proves a full interval passed with no check-in).
@@ -55,6 +69,7 @@ module.exports = {
   DEFAULT_WARNING_MISSED_CHECKINS,
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,
+  effectiveWarningThreshold,
   warningAction,
   pingAction,
 };

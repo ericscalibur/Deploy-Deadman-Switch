@@ -1,3 +1,24 @@
+// Hard ceilings the parsers enforce. validateTimeInterval() must reject
+// anything above these, because the parsers below fall back to a default on
+// out-of-range input rather than throwing — a value that passes validation
+// but exceeds the ceiling would silently arm the switch with a different
+// timer than the one the operator typed.
+const MAX_CHECKIN_MS = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weeks
+const MAX_INACTIVITY_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+
+const UNIT_MS = {
+  minute: 60 * 1000,
+  minutes: 60 * 1000,
+  hour: 60 * 60 * 1000,
+  hours: 60 * 60 * 1000,
+  day: 24 * 60 * 60 * 1000,
+  days: 24 * 60 * 60 * 1000,
+  week: 7 * 24 * 60 * 60 * 1000,
+  weeks: 7 * 24 * 60 * 60 * 1000,
+  month: 30 * 24 * 60 * 60 * 1000,
+  months: 30 * 24 * 60 * 60 * 1000,
+};
+
 // Helper function to get interval in milliseconds based on user selection
 function getIntervalMs(intervalValue) {
   if (!intervalValue) {
@@ -65,7 +86,7 @@ function getIntervalMs(intervalValue) {
 
   // Validation limits for check-in intervals
   const MIN_INTERVAL = 1 * 60 * 1000; // 1 minute minimum
-  const MAX_INTERVAL = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weeks maximum
+  const MAX_INTERVAL = MAX_CHECKIN_MS; // 4 weeks maximum
 
   if (ms < MIN_INTERVAL || ms > MAX_INTERVAL) {
     return 2 * 60 * 60 * 1000; // Default to 2 hours
@@ -142,7 +163,9 @@ function getInactivityMs(periodValue) {
 
   // Validation limits for inactivity periods
   const MIN_INACTIVITY = 1 * 60 * 1000; // 1 minute minimum
-  const MAX_INACTIVITY = 12 * 30 * 24 * 60 * 60 * 1000; // 12 months maximum
+  // One calendar year. Expressed in days so that every way the UI lets a
+  // user say "a year" (365 days, 52 weeks, 12 months) lands inside the range.
+  const MAX_INACTIVITY = MAX_INACTIVITY_MS;
 
   if (ms < MIN_INACTIVITY || ms > MAX_INACTIVITY) {
     console.warn(
@@ -215,6 +238,21 @@ function validateTimeInterval(intervalValue, isInactivityPeriod = false) {
     };
   }
 
+  // Check the absolute ceiling the parser will actually honour.
+  const ms = value * UNIT_MS[unit];
+  if (!isInactivityPeriod && ms > MAX_CHECKIN_MS) {
+    return {
+      isValid: false,
+      error: `Check-in interval cannot be longer than 4 weeks (28 days). You entered ${value} ${constraint.name}.`,
+    };
+  }
+  if (isInactivityPeriod && ms > MAX_INACTIVITY_MS) {
+    return {
+      isValid: false,
+      error: `Inactivity period cannot be longer than 1 year (365 days). You entered ${value} ${constraint.name}.`,
+    };
+  }
+
   return { isValid: true };
 }
 
@@ -262,6 +300,8 @@ function getInactivityName(ms) {
 }
 
 module.exports = {
+  MAX_CHECKIN_MS,
+  MAX_INACTIVITY_MS,
   getIntervalMs,
   getInactivityMs,
   validateTimeInterval,

@@ -1051,19 +1051,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupPage.style.display = "none";
   }
 
-  // Value constraints for different units
-  const unitConstraints = {
+  // Value constraints for different units. These mirror the server's hard
+  // ceilings (utils/timeUtils.js): check-ins up to 4 weeks, inactivity up to
+  // one year. Anything beyond is rejected server-side, so clamp it here
+  // before the operator ever sees a confusing error.
+  const inactivityConstraints = {
     minutes: { max: 60, name: "minutes" },
     hours: { max: 24, name: "hours" },
     days: { max: 365, name: "days" },
     weeks: { max: 52, name: "weeks" },
     months: { max: 12, name: "months" },
   };
+  const checkinConstraints = {
+    minutes: { max: 60, name: "minutes" },
+    hours: { max: 24, name: "hours" },
+    days: { max: 28, name: "days" },
+    weeks: { max: 4, name: "weeks" },
+  };
 
   // Function to validate and enforce value constraints
   function validateTimeInput(inputElement, unitElement) {
     const value = parseInt(inputElement.value);
     const unit = unitElement.value;
+    const unitConstraints =
+      inputElement.id === "checkin-value"
+        ? checkinConstraints
+        : inactivityConstraints;
     const constraint = unitConstraints[unit];
 
     // Update max attribute dynamically based on selected unit

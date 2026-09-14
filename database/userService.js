@@ -490,18 +490,55 @@ class UserService {
     });
   }
 
-  // Mark session as expired/triggered
-  async markSessionTriggered(sessionToken) {
+  // Close a session. With `fired`, also record that the switch actually
+  // fired (as opposed to being aborted or superseded) and how many trigger
+  // emails were delivered, so the fired state can be shown after a restart.
+  async markSessionTriggered(sessionToken, fired = null) {
+    return new Promise((resolve, reject) => {
+      const sql = fired
+        ? "UPDATE deadman_sessions SET is_active = 0, triggered_at = CURRENT_TIMESTAMP, triggered_emails_sent = ? WHERE session_token = ?"
+        : "UPDATE deadman_sessions SET is_active = 0 WHERE session_token = ?";
+      const params = fired
+        ? [fired.emailsSent || 0, sessionToken]
+        : [sessionToken];
+      this.db.run(sql, params, function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes > 0);
+        }
+      });
+    });
+  }
+
+  // Most recent fire record for a user, or null if the switch has never
+  // fired (or the record was cleared by a reset / new deployment).
+  async getLastTriggeredSession(userId) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        `SELECT triggered_at, triggered_emails_sent
+           FROM deadman_sessions
+          WHERE user_id = ? AND triggered_at IS NOT NULL
+          ORDER BY triggered_at DESC
+          LIMIT 1`,
+        [userId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row || null);
+        },
+      );
+    });
+  }
+
+  // Forget that the switch fired (operator reset, or a fresh deployment).
+  async clearTriggeredHistory(userId) {
     return new Promise((resolve, reject) => {
       this.db.run(
-        "UPDATE deadman_sessions SET is_active = 0 WHERE session_token = ?",
-        [sessionToken],
+        "UPDATE deadman_sessions SET triggered_at = NULL WHERE user_id = ?",
+        [userId],
         function (err) {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(this.changes > 0);
-          }
+          if (err) reject(err);
+          else resolve(this.changes);
         },
       );
     });

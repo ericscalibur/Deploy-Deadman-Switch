@@ -199,6 +199,12 @@ function initializeDatabase() {
                 'ALTER TABLE deadman_sessions ADD COLUMN warning_sent_at DATETIME;',
                 'ALTER TABLE deadman_sessions ADD COLUMN warning_ack_at DATETIME;',
                 'ALTER TABLE deadman_sessions ADD COLUMN warning_ack_token TEXT;',
+                // Fire record (v2.1.9): when the switch actually fired and how
+                // many trigger emails went out, so the dashboard's "switch has
+                // fired" state survives a restart instead of living only in
+                // memory.
+                'ALTER TABLE deadman_sessions ADD COLUMN triggered_at DATETIME;',
+                'ALTER TABLE deadman_sessions ADD COLUMN triggered_emails_sent INTEGER;',
             ];
             sessionColumnMigrations.forEach((sql) => {
                 const column = sql.match(/ADD COLUMN (\w+)/)[1];

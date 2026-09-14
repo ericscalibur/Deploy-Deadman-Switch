@@ -1,6 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
+  effectiveWarningThreshold,
   warningAction,
   pingAction,
   DEFAULT_WARNING_MISSED_CHECKINS,
@@ -68,6 +69,69 @@ test("custom threshold is respected", () => {
   assert.strictEqual(
     warningAction({ missedCheckins: 1, threshold: 2, warningAckAt: null }),
     "none",
+  );
+});
+
+// ---- effectiveWarningThreshold (threshold vs. available ticks) ----
+
+const MIN = 60 * 1000;
+const WEEK = 7 * DAY;
+
+test("reference config (2-week check-ins, 3-month inactivity) keeps the default", () => {
+  assert.strictEqual(
+    effectiveWarningThreshold({
+      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
+      checkinIntervalMs: 2 * WEEK,
+      inactivityMs: 90 * DAY,
+    }),
+    DEFAULT_WARNING_MISSED_CHECKINS,
+  );
+});
+
+test("short inactivity periods clamp the threshold so a warning still fires", () => {
+  // 1-week check-ins, 30-day deadline: ticks at day 7/14/21/28 -> warn at 21
+  assert.strictEqual(
+    effectiveWarningThreshold({
+      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
+      checkinIntervalMs: WEEK,
+      inactivityMs: 30 * DAY,
+    }),
+    3,
+  );
+  // 1-minute check-ins, 5-minute deadline: ticks at 1..4 -> warn at 3
+  assert.strictEqual(
+    effectiveWarningThreshold({
+      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
+      checkinIntervalMs: MIN,
+      inactivityMs: 5 * MIN,
+    }),
+    3,
+  );
+});
+
+test("threshold never drops below one tick", () => {
+  assert.strictEqual(
+    effectiveWarningThreshold({
+      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
+      checkinIntervalMs: MIN,
+      inactivityMs: 2 * MIN,
+    }),
+    1,
+  );
+  assert.strictEqual(
+    effectiveWarningThreshold({
+      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
+      checkinIntervalMs: MIN,
+      inactivityMs: 90 * 1000,
+    }),
+    1,
+  );
+});
+
+test("missing interval data falls back to the configured threshold", () => {
+  assert.strictEqual(
+    effectiveWarningThreshold({ threshold: 5 }),
+    5,
   );
 });
 

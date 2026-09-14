@@ -13,6 +13,7 @@ const {
   getInactivityName,
 } = require("../utils/timeUtils");
 const {
+  effectiveWarningThreshold,
   warningAction,
   pingAction,
   DEFAULT_WARNING_MISSED_CHECKINS,
@@ -71,6 +72,18 @@ router.use((req, res, next) => {
 // In-memory cache for active sessions (will be replaced by database queries)
 const activeDeadmanSwitches = new Map();
 const checkinTokens = new Map();
+// Tokens that were already redeemed, kept briefly so a reload of the
+// confirmation page (or a second click on the same email) says "already
+// checked in" instead of "invalid link". Nothing here grants anything.
+const usedCheckinTokens = new Map(); // token -> { at: Date, armed: bool }
+const USED_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
+function rememberUsedCheckinToken(token, armed) {
+  const now = Date.now();
+  for (const [t, info] of usedCheckinTokens) {
+    if (now - info.at.getTime() > USED_TOKEN_TTL_MS) usedCheckinTokens.delete(t);
+  }
+  usedCheckinTokens.set(token, { at: new Date(), armed });
+}
 
 // SQLite's CURRENT_TIMESTAMP writes "YYYY-MM-DD HH:MM:SS" in UTC with no
 // timezone marker, which new Date() parses as LOCAL time — skewing recovered
@@ -605,10 +618,15 @@ function hashEmail(address) {
 // instructions beyond "try to reach the operator and confirm receipt".
 async function sendPreFireWarning(userEmail, switchData) {
   try {
-    const recipients = getRecipientsFor(userEmail, switchData);
+    // Recipients who opted out of contact checks were promised no contact
+    // at all before the trigger — the warning is contact, so they skip it
+    // too. The CRITICAL email itself is never filtered by this flag.
+    const recipients = getRecipientsFor(userEmail, switchData).filter(
+      (r) => r.contactChecks !== false,
+    );
     if (recipients.length === 0) {
       console.warn(
-        `⚠️ PRE-FIRE WARNING: No recipients available for ${userEmail} — cannot warn`,
+        `⚠️ PRE-FIRE WARNING: No warn-able recipients for ${userEmail} (none, or all opted out of pre-trigger contact) — skipping warning`,
       );
       return;
     }
@@ -681,6 +699,15 @@ async function registerMissedCheckin(userEmail, switchData) {
     }
   }
 
+  // The configured threshold is clamped to the number of check-in ticks that
+  // actually fit inside this switch's inactivity period, so a short deadline
+  // (or a compressed test run) still gets a warning before the fire.
+  const warningThreshold = effectiveWarningThreshold({
+    threshold: WARNING_MISSED_CHECKINS,
+    checkinIntervalMs: getIntervalMs(switchData.settings?.checkinInterval),
+    inactivityMs: getInactivityMs(switchData.settings?.inactivityPeriod),
+  });
+
   // Out-of-band nudge from the second consecutive miss: one missed interval
   // is normal latency, two starts to look like the operator isn't receiving
   // check-ins at all — exactly the condition email cannot report on itself.
@@ -694,9 +721,7 @@ async function registerMissedCheckin(userEmail, switchData) {
         " If you are seeing this and are fine, check in now.",
       {
         priority:
-          switchData.missedCheckins >= WARNING_MISSED_CHECKINS
-            ? "urgent"
-            : "high",
+          switchData.missedCheckins >= warningThreshold ? "urgent" : "high",
         tags: "warning,hourglass",
       },
     );
@@ -704,7 +729,7 @@ async function registerMissedCheckin(userEmail, switchData) {
 
   const action = warningAction({
     missedCheckins: switchData.missedCheckins,
-    threshold: WARNING_MISSED_CHECKINS,
+    threshold: warningThreshold,
     warningAckAt: switchData.warningAckAt,
   });
   if (action === "send") {
@@ -987,7 +1012,9 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
     );
     if (sessionToken) {
       try {
-        await userService.markSessionTriggered(sessionToken);
+        await userService.markSessionTriggered(sessionToken, {
+          emailsSent: emails.length,
+        });
       } catch (error) {
         console.error(
           `❌ DEADMAN DELIVERY: Delivered but failed to close session for ${userEmail}:`,
@@ -1781,6 +1808,16 @@ router.post("/activate", authenticateToken, async (req, res) => {
       }
       activeDeadmanSwitches.delete(userEmail);
       console.log(`🔄 ACTIVATION: Cleared existing in-memory timers for ${userEmail}`);
+    }
+
+    // A new deployment supersedes any earlier fire — clear the persisted
+    // record so a restart cannot resurrect the "switch has fired" banner over
+    // a live switch.
+    deadmanActivationHistory.delete(userEmail);
+    try {
+      await userService.clearTriggeredHistory(userId);
+    } catch (error) {
+      console.error(`❌ ACTIVATION: Could not clear fire record for ${userEmail}:`, error);
     }
 
     // Deactivate any existing DB sessions before creating a new one
@@ -2609,12 +2646,39 @@ router.post("/activity", authenticateToken, (req, res) => {
 // Removed duplicate timer-status endpoint - using the first one that returns absolute timestamps
 
 // New endpoint to check if deadman was triggered for user
-router.get("/deadman-status", authenticateToken, (req, res) => {
+router.get("/deadman-status", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
 
     // Check activation history first (most reliable)
-    const activationHistory = deadmanActivationHistory.get(userEmail);
+    let activationHistory = deadmanActivationHistory.get(userEmail);
+
+    // The in-memory record does not survive a restart, but the fire is
+    // persisted with the session. If nothing is armed and memory is empty,
+    // consult the DB so the dashboard still says "fired" after a reboot
+    // instead of offering a green Deploy button as if nothing happened.
+    if (!activationHistory && !activeDeadmanSwitches.has(userEmail)) {
+      try {
+        const fired = await userService.getLastTriggeredSession(req.user.userId);
+        if (fired && fired.triggered_at) {
+          activationHistory = {
+            triggered: true,
+            timestamp: parseDbTimestamp(fired.triggered_at).toISOString(),
+            emailsSent: fired.triggered_emails_sent || 0,
+            reason: "inactivity_timeout",
+            status: "success",
+            recovered: true,
+          };
+          deadmanActivationHistory.set(userEmail, activationHistory);
+        }
+      } catch (error) {
+        console.error(
+          `❌ STATUS: Could not load fire record for ${userEmail}:`,
+          error,
+        );
+      }
+    }
+
     if (activationHistory && activationHistory.triggered) {
       return res.json({
         triggered: true,
@@ -2714,9 +2778,17 @@ router.post("/debug/test-email", authenticateToken, async (req, res) => {
 });
 
 // Reset endpoint to clear deadman data after activation
-router.post("/reset", authenticateToken, (req, res) => {
+router.post("/reset", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
+
+    // The fire record is persisted; forget it or it comes back after the
+    // next restart.
+    try {
+      await userService.clearTriggeredHistory(req.user.userId);
+    } catch (error) {
+      console.error(`❌ RESET: Could not clear fire record for ${userEmail}:`, error);
+    }
 
     // Clear any active deadman switch
     if (activeDeadmanSwitches.has(userEmail)) {
@@ -2770,6 +2842,22 @@ router.get("/checkin/:token", async (req, res) => {
     const { token } = req.params;
 
     if (!checkinTokens.has(token)) {
+      const used = usedCheckinTokens.get(token);
+      if (used) {
+        // Reload of the confirmation page, or the same link clicked twice.
+        // Nothing to redo — say so, don't alarm.
+        return res.send(`
+          <html>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+              <h2>✅ Already Checked In</h2>
+              <p>This link was already used at ${used.at.toLocaleString("en-US", { timeZone: "UTC" })} (UTC)${used.armed ? " — it armed your switch" : ""}.</p>
+              <p>Each check-in link works once. Nothing else is needed until your next check-in email arrives.</p>
+              <hr>
+              <p><small>You can close this window now.</small></p>
+            </body>
+          </html>
+        `);
+      }
       return res.status(400).send(`
         <html>
           <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
@@ -2987,8 +3075,9 @@ router.get("/checkin/:token", async (req, res) => {
       }
     }
 
-    // Remove used token
+    // Remove used token (remembering it so a re-click is explained, not rejected)
     checkinTokens.delete(token);
+    rememberUsedCheckinToken(token, wasPending);
     if (wasPending) {
       console.log(
         `🟢 ARMED: First check-in completed for ${userEmail} — countdown started`,

@@ -88,11 +88,26 @@ start9/                    # Packaging scripts for Start9 OS deployment
   email record (default on; only an explicit `false` disables). It lives on
   the email object rather than in a settings table so it travels inside the
   SECRET_KEY-encrypted envelope and is therefore available to the daily sweep
-  after a restart, with no schema change. Opting out suppresses ONLY the
-  confirmation ping — `executeDeadmanActivation` and the pre-fire warning
-  ignore the flag entirely. That boundary is deliberate: confirmation
-  happens while the operator is alive, the pre-fire warning only after
-  months of silence.
+  after a restart, with no schema change. Opting out suppresses ALL contact
+  before the trigger — the first-contact/confirmation ping AND the pre-fire
+  warning (v2.1.9; the editor copy promises "no contact with the beneficiary
+  prior to the deadman switch trigger", and the code honours that literally).
+  `executeDeadmanActivation` ignores the flag entirely: the CRITICAL email
+  always goes to every recipient.
+- **Warning threshold is clamped to the deadline (v2.1.9)**:
+  `effectiveWarningThreshold()` caps `WARNING_MISSED_CHECKINS` at the number
+  of check-in ticks that fit inside the inactivity period (minus one for a
+  resend, never below 1). Without this a 1-week/1-month switch — or any
+  compressed test — fired with no warning at all because tick 5 never came.
+- **Interval validation must match the parsers (v2.1.9)**: `getIntervalMs`
+  / `getInactivityMs` fall back to a default on out-of-range input instead
+  of throwing. `validateTimeInterval` therefore enforces the same ceilings
+  (check-in ≤ 4 weeks, inactivity ≤ 365 days) and the dashboard clamps the
+  inputs. Before this, "6-weeks" check-ins silently ran every 2 hours and
+  "52-weeks"/"365-days" inactivity silently became 1 day.
+- **Fire state is persisted (v2.1.9)**: `deadman_sessions.triggered_at` +
+  `triggered_emails_sent` are set on delivery; `/deadman-status` falls back
+  to them when memory is empty, `/reset` and a fresh `/activate` clear them.
 - **Beneficiary contact passes are serialized per operator (v2.1.1)**:
   `pingAction()` is idempotent only against *committed* state — it returns
   "send" whenever the `beneficiary_pings` row is absent, and that row is not
