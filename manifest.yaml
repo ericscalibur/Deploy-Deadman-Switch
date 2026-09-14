@@ -2,6 +2,22 @@ id: deadman-switch
 title: "Deploy: Deadman Switch"
 version: 2.1.9
 release-notes: |
+  - Fix: the pre-fire warning to beneficiaries could never be sent when the
+    inactivity period held fewer than five check-in intervals (for example
+    weekly check-ins with a one-month deadline). The switch fired with no
+    warning at all. The warning now goes out on the last check-ins before
+    the deadline regardless of how the periods are set.
+  - Fix: a check-in period longer than 4 weeks, or an inactivity period of
+    365 days or 52 weeks, was accepted but silently replaced — 6-week
+    check-ins ran every 2 hours, and a one-year inactivity period became
+    one day. Every "one year" is now honoured, and anything the switch
+    cannot run is rejected with a clear message instead of changed quietly.
+  - Unticking "Send first contact emails" for a recipient now also skips the
+    pre-fire warning, so that recipient hears nothing until the switch
+    fires — as the option describes.
+  - The "switch has fired" status now survives a restart of the service.
+  - Reloading or re-clicking a used check-in link says "Already checked in"
+    instead of "Invalid link".
   - Fix: adding a beneficiary who had been contacted before — on an earlier
     switch, or before being removed — did not send them a first contact
     email, even with the box ticked. Contact records are kept per address
