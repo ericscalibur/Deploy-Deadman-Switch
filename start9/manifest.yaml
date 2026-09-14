@@ -1,7 +1,18 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.8
+version: 2.1.9
 release-notes: |
+  - Fix: adding a beneficiary who had been contacted before — on an earlier
+    switch, or before being removed — did not send them a first contact
+    email, even with the box ticked. Contact records are kept per address
+    and are never deleted, so an address that was contacted once and never
+    clicked its confirmation link was treated as "already pending" forever
+    and quietly skipped. Adding a recipient or arming a switch now always
+    makes a fresh attempt; the automatic yearly check still holds back, so
+    a dead address is not mailed repeatedly on its own.
+  - The email that recipient receives now introduces the system rather than
+    reading as a yearly verification, since someone who never confirmed may
+    never have seen the first one.
   - Fix: after a page reload the dashboard stopped updating. A variable was
     read before it was initialised, which threw during startup and stopped
     the background sync from ever being scheduled — so countdowns and the

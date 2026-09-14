@@ -535,6 +535,20 @@ async function syncActiveSwitchRecipients(userEmail, emails) {
   const switchData = activeDeadmanSwitches.get(userEmail);
   if (!switchData) return false;
 
+  // Snapshot the previous list BEFORE overwriting it, so we can tell which
+  // addresses are genuinely new. Only those get a forced contact attempt —
+  // editing one recipient must not re-mail everyone else on the switch.
+  const previousAddresses = new Set(
+    getRecipientsFor(userEmail, switchData)
+      .map((e) => String(e.to || e.address || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const addedAddresses = new Set(
+    emails
+      .map((e) => String(e.to || e.address || "").trim().toLowerCase())
+      .filter((a) => a && !previousAddresses.has(a)),
+  );
+
   userEmails.set(userEmail, emails);
   if (switchData.settings) switchData.settings.emails = emails;
 
@@ -564,7 +578,7 @@ async function syncActiveSwitchRecipients(userEmail, emails) {
   // pingAction() skips everyone already verified. A pending switch contacts
   // nobody — same reason activation does not: it may never arm.
   if (!switchData.pending) {
-    queueBeneficiaryPings(switchData.userId, userEmail, emails).catch(
+    queueBeneficiaryPings(switchData.userId, userEmail, emails, addedAddresses).catch(
       (error) =>
         console.error(
           `❌ PING: First-contact pass after recipient edit failed for ${userEmail}:`,
@@ -795,9 +809,9 @@ async function runBeneficiaryPingSweep() {
 // previous one has committed its rows, so it sees them and skips.
 const pingQueue = createSerialQueue();
 
-function queueBeneficiaryPings(userId, operatorEmail, recipients) {
+function queueBeneficiaryPings(userId, operatorEmail, recipients, force = false) {
   return pingQueue.run(userId, () =>
-    processBeneficiaryPings(userId, operatorEmail, recipients),
+    processBeneficiaryPings(userId, operatorEmail, recipients, force),
   );
 }
 
@@ -806,7 +820,34 @@ function queueBeneficiaryPings(userId, operatorEmail, recipients) {
 // switch is armed, not up to a day later), and when recipients are edited on
 // an armed switch (so a newly added beneficiary is contacted immediately).
 // Always reached through queueBeneficiaryPings() — see the note above.
-async function processBeneficiaryPings(userId, operatorEmail, recipients) {
+// `force` is either true (every recipient) or a Set of lowercased addresses.
+//
+// beneficiary_pings rows are keyed by (user_id, email_hash) and are never
+// deleted — not when a switch fires, is deactivated, re-armed, or the
+// recipient is removed. So an address that was contacted once and never
+// clicked is stuck: pingAction() sees an unanswered ping and returns "none"
+// forever, and after the grace window it alerts the operator once and then
+// stays silent. Re-adding that person to a new switch with "send first
+// contact" ticked would quietly do nothing.
+//
+// That throttle is right for the automated daily sweep — repeatedly mailing
+// a dead inbox is noise into a void. It is wrong when the operator has just
+// explicitly asked for contact by adding a recipient or arming a switch.
+// Those paths force a fresh attempt; FORCE_MIN_GAP_MS stops rapid edits
+// from turning that into repeated mail.
+const FORCE_MIN_GAP_MS =
+  parseInt(process.env.PING_FORCE_MIN_GAP_MS, 10) || 60 * 60 * 1000;
+
+async function processBeneficiaryPings(
+  userId,
+  operatorEmail,
+  recipients,
+  force = false,
+) {
+  const shouldForce = (addr) =>
+    force === true ||
+    (force && force.has && force.has(String(addr).trim().toLowerCase()));
+
   const seen = new Set();
   for (const recipient of recipients) {
     const addr = recipient.to || recipient.address;
@@ -824,7 +865,14 @@ async function processBeneficiaryPings(userId, operatorEmail, recipients) {
     seen.add(emailHash);
 
     const ping = await userService.getBeneficiaryPing(userId, emailHash);
-    const action = pingAction({
+    const pingSentMs =
+      ping && ping.ping_sent_at
+        ? parseDbTimestamp(ping.ping_sent_at).getTime()
+        : null;
+    const ackedMs =
+      ping && ping.ack_at ? parseDbTimestamp(ping.ack_at).getTime() : null;
+
+    let action = pingAction({
       now: Date.now(),
       pingSentAt:
         ping && ping.ping_sent_at
@@ -840,10 +888,28 @@ async function processBeneficiaryPings(userId, operatorEmail, recipients) {
       graceMs: PING_ACK_GRACE_MS,
     });
 
+    // The operator explicitly asked for this one. Override a stale
+    // unanswered row, but never mail the same address twice in an hour.
+    if (
+      action !== "send" &&
+      !ackedMs &&
+      shouldForce(addr) &&
+      (!pingSentMs || Date.now() - pingSentMs >= FORCE_MIN_GAP_MS)
+    ) {
+      console.log(
+        `📮 PING: Operator-requested contact overrides stale unanswered ping for ${operatorEmail}'s recipient`,
+      );
+      action = "send";
+    }
+
     if (action === "send") {
-      // No ping row at all means this address has never been contacted —
-      // the email introduces the system instead of reading like a renewal.
-      const firstContact = !ping;
+      // Introduce the system unless this address has actually confirmed
+      // before. The renewal wording opens with "this is your once-a-year
+      // verification", which assumes the reader already knows what Deploy
+      // is — false for a never-acknowledged address, which may never have
+      // seen the original. The annual-renewal path only runs after an ack,
+      // so requiring one here costs nothing.
+      const firstContact = !ping || !ackedMs;
       const pingToken = crypto.randomBytes(32).toString("hex");
       const ackUrl = `${appUrl()}/deadman/ack/${pingToken}`;
       const sent = await emailService.sendBeneficiaryPing(
@@ -2937,6 +3003,9 @@ router.get("/checkin/:token", async (req, res) => {
           armedSwitch.userId,
           userEmail,
           getRecipientsFor(userEmail, armedSwitch),
+          // Arming is explicit intent: contact everyone on this switch,
+          // including anyone carrying a stale unanswered ping from before.
+          true,
         ).catch((error) =>
           console.error(
             `❌ PING: First-contact pass after arming failed for ${userEmail}:`,
