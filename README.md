@@ -7,16 +7,17 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 - 🔒 **Secure Authentication** - JWT-based user authentication with password hashing
 - 📧 **Email Integration** - Supports Gmail SMTP and custom SMTP servers
 - ⏰ **Flexible Timers** - Configurable check-in intervals and inactivity periods
-- 🔗 **One-Click Check-ins** - Simple email links to reset the deadman timer
+- ✉️ **Check-in by Email Reply** - Reply to the check-in email with the short
+  code it contains, from any phone or computer; emails carry no links
 - 📱 **Real-time Dashboard** - Live countdown timers and status monitoring
 - 🧹 **Complete Data Lifecycle** - Automatic cleanup after activation
 - ⚙️ **Flexible Intervals** - Configurable check-in and deadman timer periods
 - 🔶 **Pre-Fire Warning** - Recipients get ~30 days' human-readable notice
-  (with acknowledgment link) after repeated missed check-ins, before the
-  switch fires
-- 📮 **Recipient Liveness Pings** - Annual one-click address verification for
-  every recipient; you are alerted while you're still around to fix a dead
-  address
+  (acknowledged by replying with a code) after repeated missed check-ins,
+  before the switch fires
+- 📮 **Recipient Liveness Pings** - Annual address verification for every
+  recipient, answered by reply; you are alerted while you're still around
+  to fix a dead address
 - ✉️ **Deliverability-Hardened Trigger** - Plain-word severity subjects (no
   emoji), optional dedicated sender address for the trigger email, and a
   self-contained recovery spec inside the trigger email itself
@@ -26,16 +27,38 @@ A secure, web-based deadman switch service that automatically sends pre-configur
 1. **Configure**: Set up your check-in frequency and inactivity timeout
 2. **Add Recipients**: Configure emails to be sent if deadman activates  
 3. **Activate**: Start the deadman switch with real-time monitoring
-4. **Check-in**: Click links in periodic check-in emails to stay active
+4. **Check-in**: Reply to each periodic check-in email with the code it
+   contains to stay active
 5. **Automatic Trigger**: If you don't check in, recipient emails are sent automatically
 
 ### Arming requires the first check-in
 
 Deploying does not start the countdown. The switch goes to **PENDING** and
-sends you a check-in email straight away; clicking that link is what arms it.
-This is deliberate — it proves the whole loop (mail delivery, link
-reachability, token handling) end to end before anything is allowed to fire.
-A pending switch cannot fire and cannot escalate to your recipients.
+sends you a check-in email straight away; replying to it with the code it
+contains is what arms it. This is deliberate — it proves the whole round
+trip (Deploy can send, you receive, Deploy can read your answer) before
+anything is allowed to fire. A pending switch cannot fire and cannot
+escalate to your recipients.
+
+### Check-ins are email replies
+
+Every check-in email carries an 8-character code such as `K7M4-P2XQ`. Reply
+to the email with that code — nothing else is needed, and the reply can come
+from any phone or computer. Emails contain no links at all, so it does not
+matter whether your server's address is reachable from where you are.
+
+Deploy reads its own mailbox over IMAP to receive those replies. A code
+counts only when it appears outside quoted text and never from an automatic
+reply (out-of-office, helpdesk auto-acknowledgements, bounces), so a dead
+operator's vacation responder cannot keep the switch alive. Each code works
+once; five wrong guesses cancel it and a fresh email is sent. Replies get a
+one-line receipt ("Check-in received at 14:02 UTC — next check-in due …").
+
+If email replies ever stop working, the dashboard's **Check in now** button
+is your fallback, reachable at home (LAN or onion). While Deploy knows it
+cannot read its mailbox it emails you daily, shows a red banner, and holds
+the pre-fire warning and the trigger for up to 7 days rather than fire on a
+reply it could not read.
 
 ### Changing recipients while the switch is armed
 
@@ -53,9 +76,9 @@ disarm it first.
 
 ### Address confirmation (per recipient)
 
-Deploy asks each recipient to confirm their address with a one-click link —
-once when the switch is armed, and once a year after that. Their click is the
-only real proof the address still reaches a living person; a domain that
+Deploy asks each recipient to confirm their address by replying with a code
+— once when the switch is armed, and once a year after that. Their reply is
+the only real proof the address still reaches a living person; a domain that
 resolves today proves nothing about six years from now. If a recipient stops
 answering, you are alerted while you are still around to fix it.
 
@@ -119,7 +142,11 @@ Start9 server or equivalent — rather than a laptop that sleeps.
    PORT=3000
    ```
    No `SECRET_KEY` is needed — one is generated automatically on first
-   start and saved into `.env` for you.
+   start and saved into `.env` for you. With Gmail, IMAP (used to read your
+   check-in replies) is derived from the same app password — but **IMAP
+   must be enabled** in Gmail: Settings → See all settings → Forwarding and
+   POP/IMAP → Enable IMAP. `APP_URL` is only where the dashboard lives;
+   emails contain no links, so `http://localhost:3000` is fine for a laptop.
 
 4. **Start the server**
    ```bash
@@ -161,6 +188,9 @@ or run `python3 generate_secret.py`, which also writes a `.env` template.
 1. Enable 2-factor authentication on your Google account
 2. Generate an App Password: Google Account → Security → App Passwords
 3. Use your Gmail address as `EMAIL_USER` and the app password as `EMAIL_PASS`
+4. **Enable IMAP** so Deploy can read your replies: Gmail → Settings → See
+   all settings → Forwarding and POP/IMAP → *Enable IMAP* → Save changes.
+   Deploy will refuse to deploy a switch until it has logged in over IMAP.
 
 ### Custom SMTP Setup
 ```env
@@ -168,7 +198,35 @@ SMTP_HOST=smtp.your-provider.com
 SMTP_PORT=587
 SMTP_USER=your-smtp-username
 SMTP_PASS=your-smtp-password
+# Incoming mail — where Deploy reads the replies to its own emails
+IMAP_HOST=imap.your-provider.com
+IMAP_PORT=993
+IMAP_SECURE=true
+IMAP_USER=your-imap-username
+IMAP_PASS=your-imap-password
 ```
+
+What Deploy does with the mailbox, and all it does: it reads new mail
+addressed to it (INBOX and the spam folder), acts only on messages carrying
+a code, and never moves, deletes or flags anything. `REPLY_BY_EMAIL=false`
+disables reading entirely (dashboard-only mode; switches cannot then be
+deployed).
+
+### Choosing a mail provider
+
+- **Gmail** is the default and the best-tested: one app password covers
+  both sending and reading.
+- **Any provider with password-authenticated SMTP and IMAP** works
+  (Fastmail, Migadu, Zoho, an ISP mailbox, …). OAuth-only providers do not.
+- **Proton Mail** has no IMAP without Proton Bridge, which needs a running
+  desktop app — unsupported.
+- **Use a dedicated mailbox for Deploy** (recommended, not required). It
+  keeps Deploy out of your personal mail, means a leaked app password
+  exposes nothing personal, and avoids the one wrinkle of sharing a mailbox:
+  Deploy tracks messages by IMAP UID rather than read state precisely so
+  that a reply you have already read on your phone still counts.
+- **Do not self-host the mailbox** on the same machine as Deploy. Its whole
+  job is to work when that machine's operator is gone.
 
 ### Timer Configuration
 - **Check-in Intervals**: 1 minute to 2 weeks
@@ -195,9 +253,10 @@ PING_ACK_GRACE_DAYS=30
 ```
 
 The warning is a notification only — it contains no payload and no secrets.
-It carries an acknowledgment link; while unacknowledged it is re-sent every
-check-in interval, and stops once acknowledged. If you check in after a
-warning went out, recipients automatically get an "all clear".
+It carries a code the recipient replies with to acknowledge it; while
+unacknowledged it is re-sent every check-in interval, and stops once
+acknowledged. If you check in after a warning went out, recipients
+automatically get an "all clear".
 
 ### Dedicated Trigger Sender (optional, recommended)
 
@@ -231,10 +290,13 @@ sender — delivery always wins over sender hygiene.
 - `POST /deadman/activate` - Activate deadman switch
 - `POST /deadman/deactivate` - Deactivate deadman switch
 - `GET /deadman/timer-status` - Get current timer status (includes missed
-  check-in count and warning state)
-- `GET /deadman/checkin/:token` - Process check-in from email link
-- `GET /deadman/ack/:token` - Recipient acknowledgment (pre-fire warning and
-  annual address verification)
+  check-in count, warning state, how the last check-in arrived, and the
+  email-reply connection status)
+- `POST /deadman/checkin` - Dashboard check-in (the at-home fallback)
+- `GET /deadman/inbound-status` - Email-reply (IMAP) connection status
+
+Check-ins and recipient acknowledgements arrive as email replies carrying a
+code; there are no link endpoints.
 
 ### Admin/Debug
 - `GET /deadman/debug/status` - System status (requires login)
@@ -255,6 +317,9 @@ Deploy/
 │   └── crypto.js             # AES-256-GCM encryption utilities
 ├── utils/
 │   ├── emailService.js       # Email sending service
+│   ├── codes.js              # Reply codes: alphabet, generation, hashing
+│   ├── inboundParser.js      # Reply parsing: auto-reply gates, quote removal
+│   ├── inboundMail.js        # IMAP reader (UID cursor, IDLE/poll, down tracking)
 │   └── timeUtils.js          # Interval conversion and validation
 ├── public/                   # Web interface (HTML/JS/CSS, no build step)
 ├── tests/                    # Unit tests (npm test)
@@ -268,7 +333,8 @@ Deploy/
 - **JWT Authentication**: Secure token-based session management
 - **Environment Variables**: Sensitive configuration kept in `.env` file
 - **Data Isolation**: User data stored in separate files
-- **Token Expiration**: Check-in tokens are single-use and cleaned up
+- **Single-use Codes**: Every check-in and acknowledgement code works once,
+  is stored only as a hash, and is cancelled after five wrong guesses
 
 ## Development
 

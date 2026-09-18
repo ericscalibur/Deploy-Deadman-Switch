@@ -67,10 +67,20 @@ After installation, configure the service through the Start9 web interface:
 1. Enable 2-factor authentication on your Google account
 2. Generate an App Password: Google Account → Security → App Passwords
 3. Use your Gmail address and the 16-character app password
+4. Enable IMAP in Gmail (Settings → See all settings → Forwarding and
+   POP/IMAP → Enable IMAP). Deploy reads the mailbox to receive check-in
+   replies; the same app password is used.
 
 **Option 2: Custom SMTP**
 1. Get SMTP settings from your email provider
 2. Enter hostname, port (usually 587), username, and password
+3. Enter the matching IMAP host, port (usually 993), username and password.
+   Deploy reads only new mail addressed to it, acts only on messages that
+   carry a code, and never moves or deletes anything. Proton Mail (no IMAP
+   without Bridge) is unsupported; a dedicated mailbox is recommended.
+
+The **Service URL** is only where your dashboard lives — emails no longer
+contain links.
 
 ### Advanced Settings
 - **Port**: Internal service port (default: 3000)
@@ -100,8 +110,10 @@ After installation, configure the service through the Start9 web interface:
 
 3. **Activate**
    - Deploy the deadman switch
-   - Respond to check-in emails to stay active
-   - Monitor countdown timers in the dashboard
+   - Reply to each check-in email with the code it contains to stay
+     active (the first reply arms the switch)
+   - Monitor countdown timers in the dashboard; "Check in now" there is
+     the fallback if email replies stop working
 
 ## Security Considerations
 

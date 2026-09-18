@@ -4,10 +4,11 @@ Working list of what's staged for the next release and what's on the
 horizon. Items in "Staged" are already merged on `main` and ship
 automatically with the next version bump.
 
-## Next up (post-v2.1.2)
+## Shipped in v2.2.0
 
-- **Check-in and acknowledgement by email reply** (target v2.2.0; full
-  spec in `docs/reply-by-email.md`): every actionable link depends on
+- **Check-in and acknowledgement by email reply** (spec in
+  `docs/reply-by-email.md`, task list in `docs/reply-by-email-tasks.md`):
+  every actionable link depended on
   `APP_URL` being reachable from wherever the reader is — the onion on
   Start9, only the LAN or the machine itself on a laptop. Replace links
   with a code: every check-in, first-contact and pre-fire email carries an
@@ -25,6 +26,14 @@ automatically with the next version bump.
   motivation: tokens live in memory, so any restart invalidates every
   outstanding link until the next email goes out; observed live
   2026-09-03.
+
+## Next up (post-v2.2.0)
+
+- **DKIM/SPF verification of inbound replies** (`mailauth`) — the code is
+  the secret and `From` must match today; signature checks are the next
+  hardening.
+- **Bounced beneficiary pings as dead-address evidence** — bounces are
+  currently only ignored.
 
 ## Shipped in v2.1.4
 

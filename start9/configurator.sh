@@ -72,10 +72,42 @@ spec:
     masked: true
     placeholder: "your-smtp-password"
     default: ~
+  imap_host:
+    type: string
+    name: IMAP Host (custom SMTP provider only)
+    description: "Deploy reads this mailbox to receive the replies to its own emails — check-ins and address confirmations are done by replying with a code. Scope: it reads only new mail addressed to it, acts only on messages carrying a code, and never moves or deletes anything. Leave empty with the Gmail provider (derived from the Gmail settings; enable IMAP in Gmail under Settings → Forwarding and POP/IMAP). A dedicated mailbox for Deploy is recommended."
+    nullable: true
+    masked: false
+    placeholder: "imap.your-provider.com"
+    default: ~
+  imap_port:
+    type: number
+    name: IMAP Port
+    description: IMAP server port (usually 993 for TLS)
+    nullable: true
+    range: "[1,65535]"
+    integral: true
+    default: 993
+  imap_user:
+    type: string
+    name: IMAP Username
+    description: IMAP login (usually the same as the SMTP username)
+    nullable: true
+    masked: false
+    placeholder: "your-imap-username"
+    default: ~
+  imap_password:
+    type: string
+    name: IMAP Password
+    description: IMAP password (usually the same as the SMTP password)
+    nullable: true
+    masked: true
+    placeholder: "your-imap-password"
+    default: ~
   app_url:
     type: string
     name: Service URL
-    description: Your Tor or LAN address for this service (used in check-in email links). Find it in Start9 under Services → Deploy → Interfaces.
+    description: Where your dashboard lives. Emails no longer contain links. Find it in Start9 under Services → Deploy → Interfaces.
     nullable: true
     masked: false
     placeholder: "http://yourtoraddress.onion"
@@ -131,6 +163,10 @@ process.stdout.write([
   "  smtp_port: " + (d.smtp_port || 587),
   "  smtp_user: " + y(d.smtp_user),
   "  smtp_password: " + y(d.smtp_password),
+  "  imap_host: " + y(d.imap_host),
+  "  imap_port: " + (d.imap_port || 993),
+  "  imap_user: " + y(d.imap_user),
+  "  imap_password: " + y(d.imap_password),
   "  app_url: " + y(d.app_url),
   "  ntfy_topic: " + y(d.ntfy_topic),
   "  ntfy_server: " + y(d.ntfy_server)
@@ -151,6 +187,10 @@ value:
   smtp_port: 587
   smtp_user: ~
   smtp_password: ~
+  imap_host: ~
+  imap_port: 993
+  imap_user: ~
+  imap_password: ~
   app_url: ~
   ntfy_topic: ~
   ntfy_server: ~
@@ -181,16 +221,21 @@ set_config() {
     SMTP_PORT=$(echo "$CONFIG_INPUT" | yq e '.smtp_port // 587' -)
     SMTP_USER=$(echo "$CONFIG_INPUT" | yq e '.smtp_user // ""' -)
     SMTP_PASS=$(echo "$CONFIG_INPUT" | yq e '.smtp_password // ""' -)
+    IMAP_HOST=$(echo "$CONFIG_INPUT" | yq e '.imap_host // ""' -)
+    IMAP_PORT=$(echo "$CONFIG_INPUT" | yq e '.imap_port // 993' -)
+    IMAP_USER=$(echo "$CONFIG_INPUT" | yq e '.imap_user // ""' -)
+    IMAP_PASS=$(echo "$CONFIG_INPUT" | yq e '.imap_password // ""' - | tr -d ' ')
     APP_URL=$(echo "$CONFIG_INPUT" | yq e '.app_url // ""' -)
     NTFY_TOPIC=$(echo "$CONFIG_INPUT" | yq e '.ntfy_topic // ""' -)
     NTFY_SERVER=$(echo "$CONFIG_INPUT" | yq e '.ntfy_server // ""' -)
 
     # Build JSON safely via node (handles special chars in passwords/URLs)
     # Values passed one-per-line to avoid process.argv quoting issues
-    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
         "$EMAIL_PROVIDER" "$GMAIL_USER" "$GMAIL_PASS" \
         "$SMTP_HOST" "$SMTP_PORT" "$SMTP_USER" "$SMTP_PASS" "$APP_URL" \
-        "$NTFY_TOPIC" "$NTFY_SERVER" | \
+        "$NTFY_TOPIC" "$NTFY_SERVER" \
+        "$IMAP_HOST" "$IMAP_PORT" "$IMAP_USER" "$IMAP_PASS" | \
         node -e '
 const lines = require("fs").readFileSync("/dev/stdin", "utf8").split("\n");
 const v = s => (s === "" || s === "~" || s === "null") ? null : s;
@@ -204,7 +249,12 @@ const cfg = {
   smtp_password: v(lines[6]),
   app_url: v(lines[7]),
   ntfy_topic: v(lines[8]),
-  ntfy_server: v(lines[9])
+  ntfy_server: v(lines[9]),
+  // v2.2.0 — inbound mail for reply-by-email
+  imap_host: v(lines[10]),
+  imap_port: parseInt(lines[11]) || 993,
+  imap_user: v(lines[12]),
+  imap_password: v(lines[13])
 };
 process.stdout.write(JSON.stringify(cfg));
 ')
@@ -240,6 +290,10 @@ SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_USER=${SMTP_USER}
 SMTP_PASS=${SMTP_PASS}
+IMAP_HOST=${IMAP_HOST}
+IMAP_PORT=${IMAP_PORT}
+IMAP_USER=${IMAP_USER}
+IMAP_PASS=${IMAP_PASS}
 NTFY_TOPIC=${NTFY_TOPIC}
 NTFY_SERVER=${NTFY_SERVER}
 EOF

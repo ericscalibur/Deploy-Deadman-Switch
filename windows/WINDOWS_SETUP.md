@@ -50,8 +50,12 @@ click or type.
    ```
 
    `EMAIL_PASS` is a Gmail **App Password** (Google Account → Security →
-   App Passwords), not your normal Gmail password. You do not need to add a
-   SECRET_KEY — the app creates one automatically the first time it runs
+   App Passwords), not your normal Gmail password. Also **enable IMAP** in
+   Gmail (Settings → See all settings → Forwarding and POP/IMAP → Enable
+   IMAP): Deploy reads that mailbox to receive your check-in replies, and
+   will not deploy a switch until it can. `APP_URL` is only where the
+   dashboard lives — emails contain no links, so `localhost` is fine.
+   You do not need to add a SECRET_KEY — the app creates one automatically the first time it runs
    and saves it into this file. Never delete or change the SECRET_KEY line
    once it appears: it protects the data the switch needs to recover after
    a restart.
