@@ -408,7 +408,7 @@ async function sendArmingCheckin(userEmail, switchData, isReminder) {
 async function issueCheckinEmail(
   userEmail,
   switchData,
-  { arming = false, reminder = false, missedCheckins = 0 } = {},
+  { arming = false, reminder = false, missedCheckins = 0, upgrade = false } = {},
 ) {
   let code;
   try {
@@ -432,6 +432,7 @@ async function issueCheckinEmail(
   return emailService.sendCheckinEmail(userEmail, code, missedCheckins, {
     arming,
     reminder,
+    upgrade,
   });
 }
 
@@ -1040,7 +1041,7 @@ async function processBeneficiaryPings(
 // resolves — pingAction() still reads an unsent row as "never contacted",
 // so the serial-queue idempotency is unchanged. A failed send retires the
 // code it minted.
-async function sendPingTo(userId, operatorEmail, addr, firstContact) {
+async function sendPingTo(userId, operatorEmail, addr, firstContact, { upgrade = false } = {}) {
   const emailHash = hashEmail(addr);
   const row = await userService.ensureBeneficiaryPingRow(userId, emailHash);
   const { id: codeId, code } = await userService.issueCode({
@@ -1054,6 +1055,7 @@ async function sendPingTo(userId, operatorEmail, addr, firstContact) {
     operatorEmail,
     code,
     firstContact,
+    { upgrade },
   );
   if (sent) {
     await userService.saveBeneficiaryPingSent(userId, emailHash);
@@ -1144,13 +1146,91 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
   return false;
 }
 
+// ---- Upgrade path to reply-by-email (v2.2.0) ----
+//
+// Runs once, on the first start after the upgrade (keyed by
+// settings.migrated_reply_codes), after recovery has re-armed every switch
+// and before the inbound reader starts. Every link email sent before the
+// upgrade is dead: its token lived in memory (check-ins) or in columns
+// nothing reads any more (ping_token, warning_ack_token).
+//   (a) nothing to retire — link tokens were never persisted as codes;
+//   (b) every ARMED switch gets a fresh check-in email carrying a code,
+//       worded "Deploy was updated" so it is not mistaken for a fault. It
+//       goes through issueCheckinEmail(), so the code is live, the reissue
+//       stamp is set, and lastCheckinSentAt gives the fail-safe a correct
+//       reference point on the first post-upgrade cycle. The missed
+//       counter restarts at zero: whatever was missed before was missed
+//       against emails that may never have been clickable;
+//   (c) every beneficiary ping that was sent but never acknowledged is
+//       re-sent with a code (else its dead link would age into a false
+//       "address may be dead" alert), skipping opted-out recipients and
+//       operators with no armed switch, serialized per operator with the
+//       daily sweep;
+//   (d) a switch whose operator has no working IMAP is left running
+//       untouched — the red banner and the alert email are the only effect.
+// Pending switches need nothing: recovery re-sends their arming email.
+// Unacknowledged pre-fire warnings re-send with a code at the next tick.
+async function runReplyCodeMigration() {
+  try {
+    if (await userService.getSetting("migrated_reply_codes")) return;
+    console.log("🔁 UPGRADE: first start with reply-by-email — issuing coded emails");
+
+    let operators = 0;
+    for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
+      if (switchData.pending) continue;
+      try {
+        switchData.missedCheckins = 0;
+        if (switchData.sessionToken) {
+          await userService.setMissedCheckins(switchData.sessionToken, 0);
+        }
+        reissueAllowed(switchData.userId); // stamp: this is the hour's reissue
+        const sent = await issueCheckinEmail(userEmail, switchData, { upgrade: true });
+        console.log(`🔁 UPGRADE: post-upgrade check-in email ${sent ? "sent" : "NOT sent"} to ${userEmail}`);
+        operators++;
+      } catch (error) {
+        console.error(`❌ UPGRADE: check-in email for ${userEmail} failed:`, error);
+      }
+    }
+
+    let pings = 0;
+    const unanswered = await userService.getUnansweredBeneficiaryPings();
+    for (const row of unanswered) {
+      try {
+        const user = await userService.getUserById(row.user_id);
+        if (!user) continue;
+        const switchData = activeDeadmanSwitches.get(user.email);
+        if (!switchData || switchData.pending) continue; // only an armed switch may contact anyone
+        const recipient = getRecipientsFor(user.email, switchData).find(
+          (r) => hashEmail(r.to || r.address || "") === row.email_hash,
+        );
+        if (!recipient || recipient.contactChecks === false) continue;
+        const addr = recipient.to || recipient.address;
+        const sent = await pingQueue.run(row.user_id, () =>
+          sendPingTo(row.user_id, user.email, addr, true, { upgrade: true }),
+        );
+        console.log(`🔁 UPGRADE: address-check email ${sent ? "re-sent" : "NOT sent"} with a code for ${user.email}'s recipient`);
+        if (sent) pings++;
+      } catch (error) {
+        console.error(`❌ UPGRADE: re-sending ping row ${row.id} failed:`, error);
+      }
+    }
+
+    await userService.setSetting("migrated_reply_codes", new Date().toISOString());
+    console.log(`✅ UPGRADE: done — ${operators} operator check-in(s), ${pings} beneficiary ping(s) re-sent`);
+  } catch (error) {
+    console.error("❌ UPGRADE: migration failed (will retry on next start):", error);
+  }
+}
+
 // Initialize recovery on startup with delay to ensure database is ready.
-// The inbound mail reader starts only AFTER recovery: a reply that arrived
-// during the restart must find its switch re-armed, or its code would be
-// treated as belonging to a switch that no longer exists.
+// The inbound mail reader starts only AFTER recovery (and the one-time
+// upgrade pass): a reply that arrived during the restart must find its
+// switch re-armed, or its code would be treated as belonging to a switch
+// that no longer exists.
 setTimeout(() => {
   recoverActiveDeadmanSwitches()
     .catch((error) => console.error("❌ RECOVERY: unexpected failure:", error))
+    .then(() => runReplyCodeMigration())
     .finally(() => startInboundMail());
 }, 2000);
 

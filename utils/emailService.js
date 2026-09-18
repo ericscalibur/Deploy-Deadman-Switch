@@ -352,11 +352,15 @@ class EmailService {
   // No button, no URL. Reply-To is set explicitly to the routine address so
   // the reply lands where the inbound poller reads, whatever the client's
   // idea of the sender is.
+  //
+  // {upgrade: true} is the one-time email sent on first start after the
+  // v2.2.0 upgrade: an operator with a two-week interval who got a link
+  // email a few days ago must not read an unexpected check-in as a fault.
   async sendCheckinEmail(
     userEmail,
     code,
     missedCheckins = 0,
-    { arming = false, reminder = false } = {},
+    { arming = false, reminder = false, upgrade = false } = {},
   ) {
     if (!(await this.ensureReady())) {
       console.error(
@@ -388,6 +392,19 @@ class EmailService {
         leadText = `You deployed your Deploy Deadman Switch, but the countdown has NOT started. It starts only when you complete this first check-in, which proves the whole loop works: this email reached you, your reply reached Deploy, and Deploy could read it.
 
 To arm the switch, reply to this email with this code:`;
+      } else if (upgrade) {
+        subject = `Deploy check-in — Deploy was updated — ${stamp}`;
+        heading = "Deploy was updated";
+        leadHtml = `
+          <p>Deploy was updated and check-ins now work by <strong>email
+          reply</strong>: the check-in link is gone, and every check-in
+          email carries a short code instead.</p>
+          <p><strong>Reply to this email with this code to confirm you are
+          receiving these.</strong> It counts as a check-in; your check-in
+          interval and settings are unchanged.</p>`;
+        leadText = `Deploy was updated and check-ins now work by EMAIL REPLY: the check-in link is gone, and every check-in email carries a short code instead.
+
+Reply to this email with this code to confirm you are receiving these. It counts as a check-in; your check-in interval and settings are unchanged.`;
       } else {
         // missedCheckins counts consecutive intervals of silence including
         // the one that just elapsed; earlier *emails* left unanswered is one
@@ -469,7 +486,7 @@ This is an automated message from Deploy Deadman Switch.
 
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(
-        `✅ ${arming ? `Arming check-in email ${reminder ? "(reminder) " : ""}` : "Check-in email "}sent to ${userEmail}`,
+        `✅ ${arming ? `Arming check-in email ${reminder ? "(reminder) " : ""}` : upgrade ? "Post-upgrade check-in email " : "Check-in email "}sent to ${userEmail}`,
         info.messageId,
       );
       clearThrottle(`checkin-send-failed:${userEmail}`);
@@ -822,7 +839,10 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
   // `code` is the reply code the beneficiary answers with. The message
   // editor's preview passes the inert EXAM-PLE1 (it contains symbols outside
   // the code alphabet, so it can never be mistaken for a live code).
-  buildBeneficiaryPingContent(operatorEmail, code, firstContact = false) {
+  // {upgrade: true}: this address was already asked to confirm by link
+  // before the v2.2.0 upgrade and never did; say plainly that the method
+  // changed so a second email in a week does not read as a glitch.
+  buildBeneficiaryPingContent(operatorEmail, code, firstContact = false, { upgrade = false } = {}) {
     const esc = (v) =>
       String(v)
         .replace(/&/g, "&amp;")
@@ -838,7 +858,16 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     const codeHtml = codeBlockHtml(code);
     const codeText = codeBlockText(code);
 
-    const introHtml = firstContact
+    const upgradeHtml = upgrade
+      ? `<p><em>We've changed how you confirm: instead of a link, reply to this email with the code below. If you received an earlier email with a link, please ignore it.</em></p>`
+      : "";
+    const upgradeText = upgrade
+      ? `We've changed how you confirm: instead of a link, reply to this email with the code below. If you received an earlier email with a link, please ignore it.
+
+`
+      : "";
+
+    const introHtml = (firstContact
       ? `<p><strong>${op}</strong> has set up an automated notification
         system and listed this address as a trusted contact. If they ever become
         unreachable for a long period, this system will send you important
@@ -852,9 +881,10 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
         in mind. Nothing is wrong and nothing is being sent to you.</p>
         <p><strong>To confirm this address still works, reply to this email with this code:</strong></p>
         ${codeHtml}
-        <p>Nothing else is needed. The reply can come from any phone or computer.</p>`;
+        <p>Nothing else is needed. The reply can come from any phone or computer.</p>`
+    ).replace("<p><strong>To confirm", `${upgradeHtml}<p><strong>To confirm`);
 
-    const introText = firstContact
+    const introText = (firstContact
       ? `${operatorEmail} has set up an automated notification system and listed this address as a trusted contact. If they ever become unreachable for a long period, this system will send you important information they prepared. Nothing is wrong and nothing is being sent to you now.
 
 To confirm this address works, reply to this email with this code:
@@ -864,7 +894,8 @@ Nothing else is needed. The reply can come from any phone or computer.`
 
 To confirm this address still works, reply to this email with this code:
 ${codeText}
-Nothing else is needed. The reply can come from any phone or computer.`;
+Nothing else is needed. The reply can come from any phone or computer.`
+    ).replace("To confirm this address", `${upgradeText}To confirm this address`);
 
     return {
       subject,
@@ -889,6 +920,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
     operatorEmail,
     code,
     firstContact = false,
+    { upgrade = false } = {},
   ) {
     if (!(await this.ensureReady())) {
       console.error(
@@ -901,6 +933,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
       operatorEmail,
       code,
       firstContact,
+      { upgrade },
     );
 
     const mailOptions = {

@@ -4,13 +4,15 @@
 // HTTP API, reads the emails the sink captured, and injects replies through
 // POST /internal/test/inbound as if IMAP had delivered them.
 //
-//   node tests/tools/sandbox-e2e.js [full|failsafe]
+//   node tests/tools/sandbox-e2e.js [full|failsafe|upgrade]
 //
 // "full": deploy → arming by reply → first contact → beneficiary ack →
 //   periodic check-in by reply → restart mid-cycle → reply processed once →
 //   wrong code ×5 → lockout + reissue → stale code → expired + fresh email →
 //   silence → warning → beneficiary warning-ack by reply → CRITICAL. Asserts
 //   no http link in any operator/beneficiary email except CRITICAL's tool links.
+// "upgrade": first start after v2.2.0 on a pre-upgrade-shaped DB → coded
+//   "Deploy was updated" check-in + re-sent ping, missed counter reset.
 // "failsafe": IMAP configured but unreachable → warning tick is HELD and the
 //   alert email goes out; then restart with IMAP unset → normal timing → fire.
 //
@@ -409,10 +411,50 @@ async function failsafe() {
   assert(!!crit, "fired once the hold was gone");
 }
 
+// First start after the v2.2.0 upgrade: an armed switch (stale missed
+// count) and a never-answered ping must each get a coded email worded as
+// an update notice, the missed counter must restart at zero, and the new
+// codes must work. Runs against a DB shaped like a pre-upgrade one.
+async function upgrade() {
+  await deployAndArm();
+  const ping = await waitMail((m) => to(m) === BEN && /trusted contact/.test(subj(m)), "first-contact email (left unanswered)");
+  await stopServer();
+  const sqlite3 = require("sqlite3");
+  const db = new sqlite3.Database(path.join(work, "e2e.db"));
+  await new Promise((res, rej) => db.serialize(() => {
+    db.run("DELETE FROM settings WHERE key = 'migrated_reply_codes'");
+    db.run("UPDATE deadman_sessions SET missed_checkins = 3 WHERE is_active = 1", (e) => (e ? rej(e) : res()));
+  }));
+  await new Promise((r) => db.close(r));
+  for (const m of await readMail()) seen.add(m.file);
+  await startServer();
+  assert(await waitForLog(/UPGRADE: done — 1 operator check-in\(s\), 1 beneficiary ping\(s\) re-sent/, 20000), "upgrade pass ran once for 1 switch + 1 ping");
+  const up = await waitMail((m) => to(m) === OP && /Deploy was updated/.test(subj(m)), "post-upgrade check-in email");
+  assertNoLinks(up);
+  assert(/schedule|interval and settings are unchanged/i.test(up.parsed.text), "upgrade email says settings are unchanged");
+  const rp = await waitMail((m) => to(m) === BEN && /trusted contact/.test(subj(m)), "re-sent first-contact email");
+  assertNoLinks(rp);
+  assert(/changed how you confirm/.test(rp.parsed.text), "re-sent ping explains the change");
+  let r = await api("GET", "/deadman/timer-status");
+  assert(r.json.active && r.json.missedCheckins === 0, "missed counter reset to zero");
+  let res = await inject(reply(BEN, formatCode(codeOf(ping)), ping));
+  assert(res.action === "expired", "old ping code is stale, not live");
+  res = await inject(reply(OP, formatCode(codeOf(up)), up));
+  assert(res.action === "checkin" && res.via === "reply", "upgrade code checks in");
+  res = await inject(reply(BEN, formatCode(codeOf(rp)), rp));
+  assert(res.action === "ack" && res.ok, "re-sent ping code acks");
+  await stopServer();
+  await startServer();
+  assert(!(await waitForLog(/UPGRADE: first start/, 5000)), "migration does not run twice");
+}
+
 (async () => {
   startSink();
   await sleep(300);
-  if (scenario === "failsafe") {
+  if (scenario === "upgrade") {
+    await startServer();
+    await upgrade();
+  } else if (scenario === "failsafe") {
     await startServer({ IMAP_HOST: "127.0.0.1", IMAP_PORT: "1", IMAP_USER: "x", IMAP_PASS: "y" });
     await failsafe();
   } else {

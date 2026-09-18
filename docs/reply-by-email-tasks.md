@@ -160,7 +160,7 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       load-bearing; armed switch never torn down by upgrade.
 
 ## 10. Upgrade path (startup, once, keyed by `settings.migrated_reply_codes`)
-- [ ] After recovery: for each armed switch, `issueCheckinEmail` (fresh
+- [x] After recovery: for each armed switch, `issueCheckinEmail` (fresh
       code). For each beneficiary_pings row with ping_sent_at set and
       ack_at null, resend the ping with a code. Do not touch switches
       whose operator has no working IMAP beyond the red banner + alert.
