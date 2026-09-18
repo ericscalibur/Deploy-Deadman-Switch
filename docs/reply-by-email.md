@@ -69,10 +69,14 @@ switch alive:
 4. **Bounces** (`mailer-daemon`, empty `Return-Path`) are never replies.
 5. **False fire.** If Deploy cannot read mail, a living operator cannot
    check in remotely. *Mitigations:* IMAP is verified before a switch can
-   be deployed (as SMTP is today); the poller alerts via ntfy the moment
-   the connection fails and again daily while it stays down; the dashboard
-   check-in is unaffected. Deploy never fires on the strength of "no
-   reply" while it knows its own inbox is unreadable — see "Fail-safe".
+   be deployed (as SMTP is today); the dashboard check-in is unaffected;
+   Deploy never fires on the strength of "no reply" while it knows its own
+   inbox is unreadable — see "Fail-safe". Alerting is by **email first**:
+   an IMAP failure rarely coincides with an SMTP failure, so Deploy mails
+   the operator ("your replies are not being received — check in from the
+   dashboard and fix the mail settings"), repeats daily while it persists,
+   and shows a red banner on the dashboard. ntfy, when configured,
+   repeats the same alert. Nothing in the protocol depends on ntfy.
 6. **Mailbox scope.** Deploy gains IMAP read on its sending account. It
    searches only for unseen mail addressed to it, reads only messages
    containing a code pattern, never moves or deletes anything. Stated in
@@ -104,12 +108,14 @@ only inside the quote; the code with/without hyphen and in lower case.
 `registerMissedCheckin()` gains one guard: if the inbound mail connection
 has been down continuously since before the last check-in email was sent,
 the miss is still counted (the operator has other duties) **but** the
-pre-fire warning and the fire are held while the outage persists, with an
-urgent ntfy alert every day. When the connection recovers, the backlog is
-processed before any timer decision. This trades a delayed fire for never
-firing on a living operator whose replies Deploy could not read. The hold
-is capped at 7 days, after which normal timing resumes and the alert says
-so — an outage that long is the operator's problem to have noticed.
+pre-fire warning and the fire are held while the outage persists, with a
+daily alert email (and ntfy if configured). When the connection recovers,
+the backlog is processed before any timer decision. This trades a delayed
+fire for never firing on a living operator whose replies Deploy could not
+read. The hold is capped at 7 days, after which normal timing resumes and
+the alert says so — an outage that long is the operator's problem to have
+noticed. ntfy is never load-bearing: every alert in Deploy goes by email
+first and by ntfy only in addition.
 
 ## Processing
 
@@ -122,15 +128,32 @@ so — an outage that long is the operator's problem to have noticed.
 
 Poller (`utils/inboundMail.js`): `imapflow` + `mailparser`. Connect to
 the routine sending mailbox; `IDLE` where supported, else poll every 60 s;
-full resync on reconnect. Persist last UID + UIDVALIDITY per mailbox in
-`settings`. Per unseen message: discard bounces/auto-replies → extract
-code outside quotes → hash → look up live code → `From` must match →
-`performCheckin` / `performAck` → mark `\Seen`. Wrong code: increment
-`failed_attempts`; on the 5th retire and reissue. No code found: ignore
-silently (never answer unrecognised mail — that is how auto-reply loops
-start).
+full resync on reconnect. **Track by UID, never by read state**: when
+Deploy sends from the operator's own account, the reply lands in the
+operator's own inbox and they will read it on their phone before Deploy
+polls — an `UNSEEN` search would silently miss real check-ins. Persist
+last UID + UIDVALIDITY per folder in `settings`. Read `INBOX` and the
+spam folder (`[Gmail]/Spam` on Gmail) — a beneficiary's first-ever
+message to Deploy's address can land there. Per new message: discard
+bounces/auto-replies → extract the code from the subject or from the
+body outside quotes → hash → look up live code → `From` must match →
+`performCheckin` / `performAck`. Wrong code: increment `failed_attempts`;
+on the 5th retire and reissue. Reissues (for any reason) are limited to
+one per hour per operator so a spoofed `From` cannot be used to flood the
+operator with fresh check-ins. No code found: ignore silently (never
+answer unrecognised mail — that is how auto-reply loops start). Never
+moves or deletes mail.
+
+Recommend a **dedicated mailbox** for Deploy in the docs (not required):
+it removes the read-state collision above entirely, keeps Deploy out of
+the operator's personal mail, and means a leaked app password exposes
+nothing personal.
 
 ## UX
+
+Every check-in email has a distinct subject ("Deploy check-in — 18 Sep
+2026") so Gmail does not stack them into one conversation showing several
+codes at once.
 
 Check-in email (also the arming check-in):
 
@@ -147,15 +170,25 @@ First contact / annual ping / pre-fire warning:
 > **To confirm this address works, reply to this email with this code:**
 > `R8TF-3NQW`
 
-Receipts: a correct code gets a one-line confirmation ("Check-in received
-at 14:02 UTC — next check-in due <date>"). An old or used code gets "That
-code has expired — a fresh check-in email is on its way." A wrong code
-gets one "That code didn't match" per live code (never more, to avoid
-loops). Anything else gets silence.
+Receipts, all one line, all at most once per live code:
+
+- correct code → "Check-in received at 14:02 UTC — next check-in due
+  <date>" (operator) / "Confirmed — thank you. Nothing has been sent or
+  triggered and nothing else is needed." (beneficiary — replaces today's
+  ack page, or a nervous beneficiary sends the code twice)
+- used or retired code → "That code has expired — a fresh check-in email
+  is on its way."
+- wrong code → "That code didn't match."
+- code correct but `From` does not match → to the **original** address:
+  "A reply with your code arrived from <other address> and was not
+  accepted. Reply from <original address>, or check in from the
+  dashboard." Silence here would let the operator believe they checked
+  in when they had not.
+- anything else → silence.
 
 Dashboard: "Email replies: connected — last checked 14:02 UTC" (or "not
-configured" / "error: … — remote check-ins are NOT working"). Each
-check-in records `via: reply | dashboard`.
+configured" / red banner "error: … — remote check-ins are NOT working;
+use this button"). Each check-in records `via: reply | dashboard`.
 
 ## Configuration
 
@@ -181,9 +214,14 @@ now fine for a laptop install because emails never use it.
   `beneficiary_pings.ping_token` (replaced by `code_hash`), the "I'm
   Active" button, all `${APP_URL}/deadman/…` URLs, the Tor-Browser copy
   in beneficiary emails (`torNotice`).
-- The migration retires every outstanding link token; operators with a
-  live switch receive a fresh check-in email carrying a code on first
-  start after upgrade.
+- Upgrade path, in order: (a) every outstanding link token is retired;
+  (b) each armed switch gets a fresh check-in email carrying a code on
+  first start; (c) each beneficiary ping that was sent but never
+  acknowledged is re-sent with a code — otherwise its dead link would age
+  into a false "address may be dead" alert; (d) an armed switch whose
+  operator has no working IMAP (custom SMTP without IMAP settings) keeps
+  running untouched: the dashboard goes red and the alert email goes out,
+  but an armed switch is never torn down by an upgrade.
 
 ## Out of scope for v1
 
