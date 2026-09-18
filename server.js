@@ -132,6 +132,11 @@ function applyConfigToEnv(config) {
     // v2.1.0 — out-of-band operator alerting (utils/notify.js)
     ntfy_topic: "NTFY_TOPIC",
     ntfy_server: "NTFY_SERVER",
+    // v2.2.0 — inbound mail for reply-by-email (utils/inboundMail.js)
+    imap_host: "IMAP_HOST",
+    imap_port: "IMAP_PORT",
+    imap_user: "IMAP_USER",
+    imap_password: "IMAP_PASS",
   };
   for (const [cfgKey, envKey] of Object.entries(map)) {
     const val = config[cfgKey];
@@ -185,6 +190,22 @@ function isLocalhost(req) {
 
   await loadConfigFromDB();
 
+  // Reply-by-email status (v2.2.0). The IMAP reader itself starts from the
+  // routes after switch recovery; this is the startup-time summary.
+  {
+    const inboundMail = require("./utils/inboundMail");
+    const st = inboundMail.getState();
+    if (!st.enabled) {
+      console.warn("⚠️ REPLY_BY_EMAIL=false — check-in replies will NOT be read; dashboard-only mode");
+    } else if (!st.configured) {
+      console.warn(
+        "⚠️ IMAP not configured — check-in replies cannot be received and switches cannot be deployed. Set IMAP_HOST/IMAP_USER/IMAP_PASS (Gmail: derived from EMAIL_USER/EMAIL_PASS).",
+      );
+    } else {
+      console.log(`✅ Reply-by-email enabled: IMAP ${st.user}@${st.host}`);
+    }
+  }
+
   // Out-of-band alerting status: say it loudly at startup either way, so a
   // node with no ntfy topic knows it is flying without the independent
   // alarm channel (see utils/notify.js).
@@ -201,8 +222,31 @@ function isLocalhost(req) {
 
   // Internal config API — used by configurator.sh via inject:true network sharing
   const emailService = require("./utils/emailService");
+  const inboundMail = require("./utils/inboundMail");
   const sqlite3 = require("sqlite3").verbose();
   const { DB_PATH } = require("./database/init");
+
+  // Sandbox test hook (v2.2.0): feed a raw RFC 822 message straight into the
+  // inbound handler as if IMAP had delivered it. Only with
+  // DEPLOY_TEST_HOOKS=1, only from localhost. Never on in production.
+  if (process.env.DEPLOY_TEST_HOOKS === "1") {
+    const { simpleParser } = require("mailparser");
+    console.warn("🧪 DEPLOY_TEST_HOOKS=1 — POST /internal/test/inbound is enabled and IMAP is not required to deploy");
+    app.post(
+      "/internal/test/inbound",
+      express.text({ type: "*/*", limit: "5mb" }),
+      async (req, res) => {
+        if (!isLocalhost(req)) return res.status(403).end();
+        try {
+          const parsed = await simpleParser(String(req.body || ""));
+          const result = await deadmanRoutes.handleInbound(parsed, { folder: "test-hook", uid: 0 });
+          res.json({ ok: true, result });
+        } catch (error) {
+          res.status(500).json({ ok: false, error: error.message });
+        }
+      },
+    );
+  }
 
   app.get("/internal/config", (req, res) => {
     if (!isLocalhost(req)) return res.status(403).end();
@@ -234,6 +278,9 @@ function isLocalhost(req) {
         applyConfigToEnv(config);
         emailService.reinitialize().catch((e) => {
           console.error("Email reinit failed:", e.message);
+        });
+        inboundMail.reconfigure().catch((e) => {
+          console.error("IMAP reconfigure failed:", e.message);
         });
         res.json({ ok: true });
       },

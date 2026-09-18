@@ -1140,5 +1140,6 @@ This alert repeats daily while the problem persists. Automated message from Depl
 
 // Create singleton instance
 const emailService = new EmailService();
+emailService.dateStamp = dateStamp;
 
 module.exports = emailService;

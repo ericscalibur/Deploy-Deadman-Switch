@@ -785,6 +785,20 @@ class UserService {
     );
   }
 
+  // Every live code that was sent to this address (any kind, any user),
+  // newest first — the wrong-guess path needs to know whether a sender holds
+  // a live code at all before it answers.
+  async liveCodesForRecipientHash(recipientHash) {
+    return this._all(
+      `SELECT rc.*, u.email AS user_email
+         FROM reply_codes rc
+         JOIN users u ON rc.user_id = u.id
+        WHERE rc.recipient_hash = ? AND rc.used_at IS NULL AND rc.retired_at IS NULL
+        ORDER BY rc.id DESC`,
+      [recipientHash],
+    );
+  }
+
   async markCodeUsed(id) {
     const { changes } = await this._run(
       "UPDATE reply_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND used_at IS NULL",

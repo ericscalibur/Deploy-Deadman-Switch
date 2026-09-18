@@ -23,6 +23,16 @@ const {
 } = require("../utils/escalation");
 const { notify, notifyThrottled } = require("../utils/notify");
 const { createSerialQueue } = require("../utils/serialQueue");
+const { hashCode, formatCode, generateCode } = require("../utils/codes");
+const {
+  isAutoReply,
+  isBounce,
+  fromAddress,
+  visibleText,
+  extractCodes,
+  rawHeader,
+} = require("../utils/inboundParser");
+const inboundMail = require("../utils/inboundMail");
 
 // Beneficiary escalation configuration (Issues #1/#2). Defaults follow the
 // modification spec: warning after 5 consecutive check-in intervals of
@@ -46,10 +56,6 @@ const BENEFICIARY_SWEEP_INTERVAL_MS =
   parseInt(process.env.BENEFICIARY_SWEEP_INTERVAL_MS, 10) ||
   24 * 60 * 60 * 1000;
 
-function appUrl() {
-  return process.env.APP_URL || "http://localhost:3000";
-}
-
 // Initialize database service
 const userService = new UserService();
 
@@ -72,19 +78,30 @@ router.use((req, res, next) => {
 
 // In-memory cache for active sessions (will be replaced by database queries)
 const activeDeadmanSwitches = new Map();
-const checkinTokens = new Map();
-// Tokens that were already redeemed, kept briefly so a reload of the
-// confirmation page (or a second click on the same email) says "already
-// checked in" instead of "invalid link". Nothing here grants anything.
-const usedCheckinTokens = new Map(); // token -> { at: Date, armed: bool }
-const USED_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
-function rememberUsedCheckinToken(token, armed) {
-  const now = Date.now();
-  for (const [t, info] of usedCheckinTokens) {
-    if (now - info.at.getTime() > USED_TOKEN_TTL_MS) usedCheckinTokens.delete(t);
-  }
-  usedCheckinTokens.set(token, { at: new Date(), armed });
-}
+
+// Reply-by-email (v2.2.0). Nothing token-like lives in memory any more: the
+// code in each email IS the token and is persisted hashed (reply_codes).
+// What does live here is bookkeeping that may safely be lost on restart.
+//
+// Reissues triggered by inbound mail (a stale code, five wrong guesses) are
+// limited to one per hour per operator, so a spoofed From cannot be used to
+// flood the operator with fresh check-in emails. Scheduled ticks are not
+// subject to this.
+// (Millisecond override exists so the sandbox E2E can exercise both reissue
+// paths in one run; the hour is the production value.)
+const REISSUE_MIN_GAP_MS =
+  parseInt(process.env.REISSUE_MIN_GAP_MS, 10) || 60 * 60 * 1000;
+const lastInboundReissueAt = new Map(); // userId -> ms
+// Every receipt goes out at most once per live code (and per receipt type).
+const receiptsSent = new Set(); // `${codeId}:${type}`
+// Wrong guesses allowed against a live code before it is retired.
+const MAX_FAILED_ATTEMPTS = 5;
+// Fail-safe hold cap (spec "Fail-safe"): after this long without a readable
+// inbox, normal timing resumes and the alert says so.
+const INBOUND_HOLD_CAP_MS = 7 * 24 * 60 * 60 * 1000;
+const INBOUND_FIRE_RETRY_MS = 10 * 60 * 1000;
+const INBOUND_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
+const lastInboundAlertAt = new Map(); // userEmail -> ms
 
 // SQLite's CURRENT_TIMESTAMP writes "YYYY-MM-DD HH:MM:SS" in UTC with no
 // timezone marker, which new Date() parses as LOCAL time — skewing recovered
@@ -237,7 +254,7 @@ async function recoverActiveDeadmanSwitches() {
               `🚨 RECOVERY: Session for ${session.email} expired while down — sending deadman emails now`,
             );
             userEmails.set(session.email, recoveredEmails);
-            await executeDeadmanActivationRecovered(session.email, {
+            await executeDeadmanActivation(session.email, recoveredEmails, {
               sessionToken: session.session_token,
             });
           } else {
@@ -273,7 +290,14 @@ async function recoverActiveDeadmanSwitches() {
           warningAckAt: session.warning_ack_at
             ? parseDbTimestamp(session.warning_ack_at)
             : null,
-          warningAckToken: session.warning_ack_token || null,
+          // last_activity is bumped at every check-in tick, so it doubles
+          // as "when the last check-in email went out" — what the inbound
+          // fail-safe compares the outage start against.
+          lastCheckinSentAt: parseDbTimestamp(session.last_activity),
+          lastCheckinVia: session.last_checkin_via || null,
+          lastCheckinAt: session.last_checkin_at
+            ? parseDbTimestamp(session.last_checkin_at)
+            : null,
         };
 
         // Make recovered recipients available to the deadman trigger handler.
@@ -286,124 +310,10 @@ async function recoverActiveDeadmanSwitches() {
         // not from now — so a server restart doesn't reset the schedule.
         const timeUntilNextCheckin = Math.max(0, (lastActivity + checkinIntervalMs) - now);
 
-        const sendRecoveredCheckin = async () => {
-          try {
-            console.log(
-              `🔍 PERIODIC CHECK-IN: Timer fired for ${session.email} (recovered)`,
-            );
-
-            if (!activeDeadmanSwitches.has(session.email)) {
-              console.log(
-                `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${session.email}, stopping timer`,
-              );
-              return;
-            }
-
-            const checkinToken = crypto.randomBytes(32).toString("hex");
-            checkinTokens.set(checkinToken, session.email);
-
-            if (switchData.sessionToken) {
-              try {
-                await userService.updateSessionActivity(
-                  switchData.sessionToken,
-                );
-              } catch (error) {
-                console.error(
-                  `Failed to update session activity during recovered check-in for ${session.email}:`,
-                  error,
-                );
-              }
-            }
-
-            // Deadline passed → the fire path owns this switch now (see the
-            // matching guard in /activate's timer).
-            if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
-              console.log(
-                `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${session.email}, skipping check-in email`,
-              );
-              return;
-            }
-
-            const missedCount = await registerMissedCheckin(
-              session.email,
-              switchData,
-            );
-
-            emailService
-              .sendCheckinEmail(session.email, checkinToken, missedCount)
-              .then((emailSent) => {
-                if (!emailSent) {
-                  console.error(
-                    `❌ PERIODIC CHECK-IN: Failed to send recovered check-in email to ${session.email}`,
-                  );
-                } else {
-                  console.log(
-                    `✅ PERIODIC CHECK-IN: Recovered email sent successfully to ${session.email}`,
-                  );
-                }
-              })
-              .catch((error) => {
-                console.error(
-                  `❌ PERIODIC CHECK-IN: Error sending recovered check-in email to ${session.email}:`,
-                  error,
-                );
-              });
-
-            const nextCheckinNow = Date.now();
-            switchData.nextCheckinTime = new Date(
-              nextCheckinNow + checkinIntervalMs,
-            );
-            switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-            console.log(
-              `📧 PERIODIC CHECK-IN: Recovered email sent for ${session.email}, next check-in in ${checkinIntervalMs / 1000 / 60} minutes`,
-            );
-          } catch (error) {
-            console.error(
-              `❌ PERIODIC CHECK-IN: Critical error in recovered timer callback for ${session.email}:`,
-              error,
-            );
-          }
-
-          // Schedule next checkin if still active
-          if (activeDeadmanSwitches.has(session.email)) {
-            switchData.checkinTimer = setTimeout(sendRecoveredCheckin, checkinIntervalMs);
-          }
-        };
-
-        switchData.checkinTimer = setTimeout(sendRecoveredCheckin, timeUntilNextCheckin);
-
-        // Set up deadman timer for remaining time with large timeout support
-        const MAX_TIMEOUT = 2147483647; // Max setTimeout value
-
-        if (timeRemaining <= MAX_TIMEOUT) {
-          // Standard setTimeout for periods <= 24.8 days
-          switchData.deadmanTimer = setTimeout(async () => {
-            await executeDeadmanActivationRecovered(session.email, switchData);
-          }, timeRemaining);
-        } else {
-          // For longer periods, use interval checking
-          console.log(
-            `⚠️ LARGE TIMEOUT RECOVERY: Using interval checking for ${session.email} (${timeRemaining}ms > ${MAX_TIMEOUT}ms)`,
-          );
-
-          switchData.deadmanTimer = setInterval(async () => {
-            const now = Date.now();
-            const currentTimeRemaining = switchData.deadmanActivation - now;
-
-            console.log(
-              `🔍 LARGE TIMEOUT RECOVERY CHECK: ${session.email} - ${currentTimeRemaining}ms remaining`,
-            );
-
-            if (currentTimeRemaining <= 0) {
-              // Time has expired, trigger deadman
-              clearInterval(switchData.deadmanTimer);
-              await executeDeadmanActivationRecovered(
-                session.email,
-                switchData,
-              );
-            }
-          }, 60000); // Check every minute for large timeouts
-        }
+        // Both timers, from the persisted absolute times — a restart must
+        // not reset the schedule. The fire path is the shared one; the
+        // inbound fail-safe hold applies to it like any other.
+        startRecoveredTimers(session.email, switchData, checkinIntervalMs, timeUntilNextCheckin);
 
         // Store the recovered switch
         activeDeadmanSwitches.set(session.email, switchData);
@@ -478,19 +388,67 @@ async function alertUnrecoverableSwitch(userEmail) {
 // restoring the pending state.
 
 async function sendArmingCheckin(userEmail, switchData, isReminder) {
-  const checkinToken = crypto.randomBytes(32).toString("hex");
-  checkinTokens.set(checkinToken, userEmail);
-  const sent = await emailService.sendArmingCheckinEmail(
-    userEmail,
-    checkinToken,
-    isReminder,
-  );
+  const sent = await issueCheckinEmail(userEmail, switchData, {
+    arming: true,
+    reminder: isReminder,
+  });
   if (!sent) {
     console.error(
       `❌ PENDING: Arming check-in email to ${userEmail} could not be sent — switch stays pending`,
     );
   }
   return sent;
+}
+
+// Every check-in email — arming, reminder, periodic, recovered, reissued —
+// goes through here: mint a code (retiring the previous one for this
+// switch), remember when it went out, send it. The code is persisted hashed
+// before the email exists, so a reply that beats the SMTP round trip still
+// finds it.
+async function issueCheckinEmail(
+  userEmail,
+  switchData,
+  { arming = false, reminder = false, missedCheckins = 0 } = {},
+) {
+  let code;
+  try {
+    ({ code } = await userService.issueCode({
+      kind: arming ? "arming" : "checkin",
+      userId: switchData.userId,
+      recipientHash: hashEmail(userEmail),
+      ref: switchData.sessionToken || null,
+    }));
+  } catch (error) {
+    console.error(`❌ CODE: Could not issue a check-in code for ${userEmail}:`, error);
+    notifyThrottled(
+      `code-issue-failed:${userEmail}`,
+      60 * 60 * 1000,
+      `Could not create a check-in code for ${userEmail} (${error.message}) — no check-in email was sent.`,
+      { priority: "urgent", tags: "rotating_light,x" },
+    );
+    return false;
+  }
+  switchData.lastCheckinSentAt = new Date();
+  return emailService.sendCheckinEmail(userEmail, code, missedCheckins, {
+    arming,
+    reminder,
+  });
+}
+
+// Retire every operator-side code (arming, check-in, warning-ack) — used
+// whenever a switch stops existing: deactivation, fire, reset, re-deploy.
+function retireOperatorCodes(userId, why) {
+  if (!userId) return Promise.resolve(0);
+  return userService
+    .retireCodes({ userId, kinds: ["arming", "checkin", "warning-ack"] })
+    .then((n) => {
+      if (n) console.log(`🔒 CODE: Retired ${n} live code(s) for user ${userId} (${why})`);
+      return n;
+    })
+    .catch((error) => {
+      console.error(`❌ CODE: Failed to retire codes for user ${userId}:`, error);
+      return 0;
+    });
 }
 
 // The reminder interval reuses switchData.checkinTimer so every existing
@@ -633,10 +591,6 @@ async function sendPreFireWarning(userEmail, switchData) {
     }
 
     const isResend = !!switchData.warningSentAt;
-    if (!switchData.warningAckToken) {
-      switchData.warningAckToken = crypto.randomBytes(32).toString("hex");
-    }
-    const ackUrl = `${appUrl()}/deadman/ack/${switchData.warningAckToken}`;
     const daysRemaining = Math.max(
       0,
       Math.round((switchData.deadmanActivation - Date.now()) / 86400000),
@@ -645,21 +599,12 @@ async function sendPreFireWarning(userEmail, switchData) {
     for (const recipient of recipients) {
       const addr = recipient.to || recipient.address;
       if (!addr) continue;
-      await emailService.sendBeneficiaryWarning(
-        addr,
-        userEmail,
-        daysRemaining,
-        ackUrl,
-        isResend,
-      );
+      await sendWarningTo(userEmail, switchData, addr, isResend);
     }
 
     switchData.warningSentAt = switchData.warningSentAt || new Date();
     if (switchData.sessionToken) {
-      await userService.setWarningSent(
-        switchData.sessionToken,
-        switchData.warningAckToken,
-      );
+      await userService.setWarningSent(switchData.sessionToken);
     }
     console.log(
       `🔶 PRE-FIRE WARNING: ${isResend ? "Re-sent" : "Sent"} to ${recipients.length} recipient(s) for ${userEmail} (~${daysRemaining} days to fire)`,
@@ -676,6 +621,36 @@ async function sendPreFireWarning(userEmail, switchData) {
       error,
     );
   }
+}
+
+// One warning email to one recipient, with its own reply code (kind
+// warning-ack, keyed by session + recipient). Each send mints a fresh code
+// and retires that recipient's previous one; the first ack from any
+// recipient stops the resends for the whole switch, as before.
+async function sendWarningTo(userEmail, switchData, addr, isResend) {
+  const daysRemaining = Math.max(
+    0,
+    Math.round((switchData.deadmanActivation - Date.now()) / 86400000),
+  );
+  let code;
+  try {
+    ({ code } = await userService.issueCode({
+      kind: "warning-ack",
+      userId: switchData.userId,
+      recipientHash: hashEmail(addr),
+      ref: switchData.sessionToken || null,
+    }));
+  } catch (error) {
+    console.error(`❌ CODE: Could not issue a warning-ack code for ${userEmail}'s recipient:`, error);
+    return false;
+  }
+  return emailService.sendBeneficiaryWarning(
+    addr,
+    userEmail,
+    daysRemaining,
+    code,
+    isResend,
+  );
 }
 
 // Called on every periodic check-in tick, BEFORE the operator's check-in
@@ -734,11 +709,95 @@ async function registerMissedCheckin(userEmail, switchData) {
     warningAckAt: switchData.warningAckAt,
   });
   if (action === "send") {
-    await sendPreFireWarning(userEmail, switchData);
+    // Fail-safe: while Deploy knows it cannot read its own inbox, the
+    // operator's replies are going unseen. The miss is still counted (the
+    // operator has other duties: the dashboard button works), but no human
+    // is told "the operator has stopped responding" on the strength of it.
+    const hold = inboundHold(switchData);
+    if (hold.held) {
+      console.warn(
+        `⏸️ PRE-FIRE WARNING HELD for ${userEmail}: inbound mail down since ${hold.downSince} — warning not sent`,
+      );
+      maybeSendInboundDownAlert(userEmail, switchData, hold);
+    } else {
+      await sendPreFireWarning(userEmail, switchData);
+    }
+  } else if (inboundHold(switchData).held) {
+    maybeSendInboundDownAlert(userEmail, switchData, inboundHold(switchData));
   }
 
   return switchData.missedCheckins;
 }
+
+// ---- Inbound fail-safe (spec "Fail-safe") ----
+//
+// If Deploy cannot read mail, a living operator cannot check in remotely.
+// While the inbound connection has been down continuously since before the
+// last check-in email went out, the pre-fire warning and the fire are held
+// (the miss is still counted). The hold is capped at INBOUND_HOLD_CAP_MS;
+// after that normal timing resumes and the alert says so. Only a CONFIGURED
+// connection that is failing holds anything: an install with no IMAP at all
+// keeps its normal timing (red banner + alert email only), so an upgrade
+// never tears down or silently freezes an armed switch.
+function inboundHold(switchData) {
+  const st = inboundMail.getState();
+  if (!st.enabled || !st.configured || !st.downSince) return { held: false };
+  const downSince = new Date(st.downSince).getTime();
+  const lastSent = switchData && switchData.lastCheckinSentAt
+    ? new Date(switchData.lastCheckinSentAt).getTime()
+    : 0;
+  if (!(downSince < lastSent)) return { held: false, reason: "outage-after-last-email", downSince: st.downSince };
+  if (Date.now() - downSince >= INBOUND_HOLD_CAP_MS) {
+    return { held: false, capExpired: true, downSince: st.downSince };
+  }
+  return { held: true, downSince: st.downSince };
+}
+
+// Email first, ntfy in addition; at most once per operator per 24 h.
+function maybeSendInboundDownAlert(userEmail, switchData, hold = {}) {
+  const last = lastInboundAlertAt.get(userEmail) || 0;
+  if (Date.now() - last < INBOUND_ALERT_REPEAT_MS) return false;
+  lastInboundAlertAt.set(userEmail, Date.now());
+  const st = inboundMail.getState();
+  const notConfigured = !!(st.enabled && !st.configured);
+  emailService
+    .sendInboundDownAlert(userEmail, hold.downSince || st.downSince, {
+      notConfigured,
+      capExpired: !!hold.capExpired,
+      error: st.error,
+    })
+    .catch((error) =>
+      console.error(`❌ ALERT: inbound-down alert to ${userEmail} failed:`, error),
+    );
+  notify(
+    notConfigured
+      ? `Deploy has no IMAP settings, so replies to ${userEmail}'s check-in emails cannot be received. Check in from the dashboard and configure IMAP.`
+      : `Deploy cannot read its mailbox (since ${hold.downSince || st.downSince}). ${userEmail}'s replies are NOT being received${hold.capExpired ? " — the 7-day safety hold has run out and normal timing has resumed" : " — the warning and the fire are held for up to 7 days"}. Check in from the dashboard and fix the IMAP settings.`,
+    { priority: "urgent", tags: "rotating_light,mailbox" },
+  );
+  return true;
+}
+
+// Every 10 minutes: any armed or pending switch whose operator cannot be
+// heard by reply gets the daily alert, independent of check-in ticks (which
+// may be weeks apart).
+async function inboundHealthSweep() {
+  try {
+    const st = inboundMail.getState();
+    if (!st.enabled) return;
+    for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
+      if (!st.configured) {
+        maybeSendInboundDownAlert(userEmail, switchData, {});
+      } else if (st.downSince) {
+        const hold = inboundHold(switchData);
+        maybeSendInboundDownAlert(userEmail, switchData, hold.downSince ? hold : { downSince: st.downSince });
+      }
+    }
+  } catch (error) {
+    console.error("❌ INBOUND SWEEP: failed:", error);
+  }
+}
+setInterval(inboundHealthSweep, INBOUND_FIRE_RETRY_MS);
 
 // Operator proved they're alive (check-in or manual re-arm): zero the
 // counter, clear warning state, and stand the beneficiaries down if a
@@ -750,11 +809,16 @@ async function resetEscalationState(userEmail, switchData) {
   switchData.missedCheckins = 0;
   switchData.warningSentAt = null;
   switchData.warningAckAt = null;
-  switchData.warningAckToken = null;
 
   if (switchData.sessionToken) {
     try {
       await userService.clearWarningState(switchData.sessionToken);
+      // Outstanding warning codes belong to a lapse that is now over.
+      await userService.retireCodes({
+        userId: switchData.userId,
+        kind: "warning-ack",
+        ref: switchData.sessionToken,
+      });
     } catch (error) {
       console.error(
         `❌ ESCALATION: Failed to clear warning state for ${userEmail}:`,
@@ -936,16 +1000,8 @@ async function processBeneficiaryPings(
       // seen the original. The annual-renewal path only runs after an ack,
       // so requiring one here costs nothing.
       const firstContact = !ping || !ackedMs;
-      const pingToken = crypto.randomBytes(32).toString("hex");
-      const ackUrl = `${appUrl()}/deadman/ack/${pingToken}`;
-      const sent = await emailService.sendBeneficiaryPing(
-        addr,
-        operatorEmail,
-        ackUrl,
-        firstContact,
-      );
+      const sent = await sendPingTo(userId, operatorEmail, addr, firstContact);
       if (sent) {
-        await userService.saveBeneficiaryPingSent(userId, emailHash, pingToken);
         console.log(
           `📮 PING: ${firstContact ? "First-contact" : "Renewal"} ping sent for ${operatorEmail}'s recipient`,
         );
@@ -976,6 +1032,35 @@ async function processBeneficiaryPings(
       }
     }
   }
+}
+
+// One ping email to one address, with its own reply code (kind ping-ack,
+// ref = the beneficiary_pings row id). The row is created up front so the
+// code can reference it, but ping_sent_at is only stamped once the send
+// resolves — pingAction() still reads an unsent row as "never contacted",
+// so the serial-queue idempotency is unchanged. A failed send retires the
+// code it minted.
+async function sendPingTo(userId, operatorEmail, addr, firstContact) {
+  const emailHash = hashEmail(addr);
+  const row = await userService.ensureBeneficiaryPingRow(userId, emailHash);
+  const { id: codeId, code } = await userService.issueCode({
+    kind: "ping-ack",
+    userId,
+    recipientHash: emailHash,
+    ref: String(row.id),
+  });
+  const sent = await emailService.sendBeneficiaryPing(
+    addr,
+    operatorEmail,
+    code,
+    firstContact,
+  );
+  if (sent) {
+    await userService.saveBeneficiaryPingSent(userId, emailHash);
+  } else {
+    await userService.retireCode(codeId).catch(() => {});
+  }
+  return sent;
 }
 
 // First sweep shortly after startup (after recovery re-arms switches), then
@@ -1059,60 +1144,14 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
   return false;
 }
 
-async function executeDeadmanActivationRecovered(userEmail, switchData) {
-  try {
-    console.log(
-      `🚨 DEADMAN TIMER EXPIRED: Activating for ${userEmail} (recovered)`,
-    );
-
-    // Get emails if available
-    let emails = userEmails.get(userEmail) || [];
-
-    if (emails.length === 0) {
-      // We cannot recover the recipients — do NOT silently close the switch.
-      // Alert the user and leave the session active so a later restart (or the
-      // user logging in) can still deliver, and keep re-alerting until then.
-      console.error(
-        `❌ DEADMAN ACTIVATION: No recoverable recipients for ${userEmail} — switch expired but cannot deliver. Alerting, NOT closing.`,
-      );
-      await alertUnrecoverableSwitch(userEmail);
-      return;
-    }
-
-    // Deliver and close the session only on confirmed delivery; on failure
-    // the helper leaves the session active, alerts, and schedules retries.
-    await deliverDeadmanEmails(userEmail, emails, switchData.sessionToken);
-
-    // Cleanup
-    const currentSwitchData = activeDeadmanSwitches.get(userEmail);
-    if (currentSwitchData && currentSwitchData.checkinTimer) {
-      clearInterval(currentSwitchData.checkinTimer);
-    }
-
-    userEmails.delete(userEmail);
-    const tokensToDelete = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        tokensToDelete.push(token);
-      }
-    }
-    tokensToDelete.forEach((token) => checkinTokens.delete(token));
-    activeDeadmanSwitches.delete(userEmail);
-
-    console.log(
-      `✅ DEADMAN CLEANUP: All timers and data cleared for ${userEmail} (recovered)`,
-    );
-  } catch (error) {
-    console.error(
-      `Error in recovered deadman timer callback for ${userEmail}:`,
-      error,
-    );
-  }
-}
-
-// Initialize recovery on startup with delay to ensure database is ready
+// Initialize recovery on startup with delay to ensure database is ready.
+// The inbound mail reader starts only AFTER recovery: a reply that arrived
+// during the restart must find its switch re-armed, or its code would be
+// treated as belonging to a switch that no longer exists.
 setTimeout(() => {
-  recoverActiveDeadmanSwitches();
+  recoverActiveDeadmanSwitches()
+    .catch((error) => console.error("❌ RECOVERY: unexpected failure:", error))
+    .finally(() => startInboundMail());
 }, 2000);
 
 // Periodic state saving for crash protection
@@ -1675,6 +1714,11 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
         missedCheckins: switchData.missedCheckins || 0,
         warningSent: !!switchData.warningSentAt,
         warningAcknowledged: !!switchData.warningAckAt,
+        // How the last check-in arrived: "reply" | "dashboard" | null.
+        lastCheckinVia: switchData.lastCheckinVia || null,
+        lastCheckinAt: switchData.lastCheckinAt || null,
+        inbound: inboundStatus(),
+        inboundHold: inboundHold(switchData).held,
         settings: {
           checkinInterval: switchData.settings.checkinInterval,
           inactivityPeriod: switchData.settings.inactivityPeriod,
@@ -1685,6 +1729,7 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
       res.json({
         success: true,
         active: false,
+        inbound: inboundStatus(),
       });
     }
   } catch (error) {
@@ -1726,6 +1771,36 @@ router.post("/activate", authenticateToken, async (req, res) => {
         message:
           "Email service is not working (SMTP login failed), so check-in and deadman emails cannot be sent. Fix EMAIL_USER/EMAIL_PASS in the server config (Gmail app passwords can be revoked) and try again. The switch was NOT activated.",
       });
+    }
+
+    // Refuse to deploy a switch whose replies could not be read. Remote
+    // check-ins are by email reply only (v2.2.0); with no working IMAP the
+    // operator can only ever check in from the dashboard, and the arming
+    // dry run could not prove the loop. Same principle as the SMTP gate.
+    // DEPLOY_TEST_HOOKS=1 (sandbox) injects replies directly and skips this.
+    if (process.env.DEPLOY_TEST_HOOKS !== "1") {
+      const inboundState = inboundMail.getState();
+      if (!inboundState.enabled) {
+        return res.status(400).json({
+          message:
+            "Reply-by-email is disabled (REPLY_BY_EMAIL=false), so nothing could ever answer a check-in email. Enable it and configure IMAP, then try again. The switch was NOT activated.",
+        });
+      }
+      if (!inboundState.configured) {
+        return res.status(400).json({
+          message:
+            "Incoming mail (IMAP) is not configured, so Deploy could not read your check-in replies. With the Gmail provider it is derived from the same app password (enable IMAP in Gmail settings); with a custom SMTP provider set IMAP_HOST/IMAP_USER/IMAP_PASS. The switch was NOT activated.",
+        });
+      }
+      const imapOk = await inboundMail.ensureVerified();
+      if (!imapOk) {
+        console.error(
+          `❌ ACTIVATION: IMAP login failed — refusing to activate switch for ${userEmail}`,
+        );
+        return res.status(503).json({
+          message: `Incoming mail (IMAP) login failed (${inboundMail.lastVerifyError() || "unknown error"}), so your check-in replies could not be read. Fix the IMAP settings (Gmail: IMAP must be enabled under Settings → Forwarding and POP/IMAP; the app password must be current) and try again. The switch was NOT activated.`,
+        });
+      }
     }
 
     // Get user's salt and current encrypted data
@@ -1829,6 +1904,8 @@ router.post("/activate", authenticateToken, async (req, res) => {
     } catch (err) {
       console.log(`🔄 ACTIVATION: No existing DB sessions to deactivate for ${userEmail}`);
     }
+    // Codes from the previous switch (any state) must not act on this one.
+    await retireOperatorCodes(userId, "re-deploy");
 
     // Create encrypted deadman session in database
     const sessionData = await userService.createDeadmanSession(userId, {
@@ -1948,7 +2025,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
       warningPossible: warningWillFire,
       message:
         (armingEmailSent
-          ? "Switch deployed and PENDING. A check-in email was just sent to you — click its link to arm the switch and start the countdown."
+          ? "Switch deployed and PENDING. A check-in email was just sent to you — reply to it with the code it contains to arm the switch and start the countdown."
           : "Switch deployed and PENDING, but the first check-in email could not be sent yet. The server will keep retrying; the countdown will not start until you complete a check-in.") +
         warningNote,
       settings: {
@@ -1966,12 +2043,38 @@ router.post("/activate", authenticateToken, async (req, res) => {
   }
 });
 
-// Helper function to execute deadman activation (extracted for reuse)
-async function executeDeadmanActivation(userEmail, emails) {
+// Helper function to execute deadman activation (extracted for reuse).
+// `switchData` is the in-memory switch when the caller has it (recovery's
+// expired-while-down path passes a bare { sessionToken }).
+async function executeDeadmanActivation(userEmail, emails, switchData = null) {
   try {
     console.log(
       `🚨 DEADMAN TIMER EXPIRED: Starting email send process for ${userEmail}`,
     );
+
+    // Fail-safe: never fire on the strength of "no reply" while Deploy knows
+    // its own inbox is unreadable. Re-check every 10 minutes; the hold is
+    // capped at 7 days (inboundHold), after which this proceeds and the
+    // alert has said so. A check-in arriving meanwhile clears this timer.
+    const live = activeDeadmanSwitches.get(userEmail) || switchData;
+    const hold = inboundHold(live);
+    if (hold.held) {
+      console.warn(
+        `⏸️ FIRE HELD for ${userEmail}: inbound mail down since ${hold.downSince} — re-checking in ${INBOUND_FIRE_RETRY_MS / 60000} minutes`,
+      );
+      maybeSendInboundDownAlert(userEmail, live, hold);
+      if (live && activeDeadmanSwitches.get(userEmail) === live) {
+        if (live.deadmanTimer) {
+          clearTimeout(live.deadmanTimer);
+          clearInterval(live.deadmanTimer);
+        }
+        live.deadmanTimer = setTimeout(() => {
+          const currentEmails = userEmails.get(userEmail) || emails;
+          executeDeadmanActivation(userEmail, currentEmails, live);
+        }, INBOUND_FIRE_RETRY_MS);
+      }
+      return;
+    }
 
     // Never record a "triggered" activation with zero recipients — that would
     // silently close the switch without delivering anything. Alert instead.
@@ -1991,7 +2094,7 @@ async function executeDeadmanActivation(userEmail, emails) {
     // Capture the session token before cleanup wipes in-memory state. Without
     // closing the DB session on delivery, every later restart would re-fire
     // this switch and re-send the deadman emails.
-    const activeData = activeDeadmanSwitches.get(userEmail);
+    const activeData = activeDeadmanSwitches.get(userEmail) || switchData;
     const sessionToken = activeData ? activeData.sessionToken : null;
 
     // Deliver and close the session only on confirmed delivery; on failure
@@ -2023,14 +2126,13 @@ async function executeDeadmanActivation(userEmail, emails) {
     // Clear all user data after deadman activation
     userEmails.delete(userEmail);
 
-    // Clear any check-in tokens for this user
-    const tokensToDelete = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        tokensToDelete.push(token);
-      }
+    // A fired switch answers no more codes. Ping-ack codes stay live: an
+    // address confirmation is still true information.
+    if (currentSwitchData && currentSwitchData.deadmanTimer) {
+      clearTimeout(currentSwitchData.deadmanTimer);
+      clearInterval(currentSwitchData.deadmanTimer);
     }
-    tokensToDelete.forEach((token) => checkinTokens.delete(token));
+    retireOperatorCodes(activeData ? activeData.userId : null, "fired");
 
     // Remove from active switches
     activeDeadmanSwitches.delete(userEmail);
@@ -2072,17 +2174,8 @@ router.post("/deactivate", authenticateToken, async (req, res) => {
       console.log(`🔄 DEACTIVATE: Cleared deadman timer for ${userEmail}`);
     }
 
-    // Clear any check-in tokens for this user
-    const tokensToDelete = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        tokensToDelete.push(token);
-      }
-    }
-    tokensToDelete.forEach((token) => checkinTokens.delete(token));
-    console.log(
-      `🔄 DEACTIVATE: Cleared ${tokensToDelete.length} check-in tokens for ${userEmail}`,
-    );
+    // Codes emailed for this switch must stop working.
+    await retireOperatorCodes(switchData.userId, "deactivated");
 
     // Clear user emails
     userEmails.delete(userEmail);
@@ -2209,14 +2302,7 @@ router.post("/debug-clear-all", authenticateToken, (req, res) => {
       console.log(`🧹 Cleared active switch for ${userEmail}`);
     }
 
-    // Clear tokens for this user only
-    let tokenCount = 0;
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        checkinTokens.delete(token);
-        tokenCount++;
-      }
-    }
+    retireOperatorCodes(req.user.userId, "debug-clear-all");
 
     // Clear this user's emails and history
     const hadEmails = userEmails.has(userEmail);
@@ -2231,7 +2317,6 @@ router.post("/debug-clear-all", authenticateToken, (req, res) => {
       message: "Your active switch and data cleared",
       cleared: {
         activeSwitches: clearedCount,
-        checkinTokens: tokenCount,
         userEmails: hadEmails ? 1 : 0,
         activationHistory: hadHistory ? 1 : 0,
       },
@@ -2301,13 +2386,7 @@ router.post("/debug-clear-expired", authenticateToken, async (req, res) => {
     // Clear related data
     userEmails.delete(userEmail);
     deadmanActivationHistory.delete(userEmail);
-
-    // Clear check-in tokens for this user
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        checkinTokens.delete(token);
-      }
-    }
+    retireOperatorCodes(userId, "debug-clear-expired");
 
     console.log(`🧹 DEBUG-CLEAR-EXPIRED: Complete cleanup for ${userEmail}`);
 
@@ -2329,12 +2408,6 @@ router.get("/debug-status", authenticateToken, (req, res) => {
     console.log(`🔍 DEBUG-STATUS: Request from ${userEmail}`);
 
     const activeSwitch = activeDeadmanSwitches.get(userEmail);
-    const userTokens = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        userTokens.push(token);
-      }
-    }
 
     res.json({
       success: true,
@@ -2350,7 +2423,7 @@ router.get("/debug-status", authenticateToken, (req, res) => {
             settings: activeSwitch.settings,
           }
         : null,
-      activeTokensCount: userTokens.length,
+      inbound: inboundStatus(),
       totalActiveSwitches: activeDeadmanSwitches.size,
       hasUserEmails: userEmails.has(userEmail),
       userEmailsCount: userEmails.has(userEmail)
@@ -2389,13 +2462,7 @@ router.post("/clear-sessions", authenticateToken, async (req, res) => {
 
     // Clear other data
     userEmails.delete(userEmail);
-    const tokensToDelete = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        tokensToDelete.push(token);
-      }
-    }
-    tokensToDelete.forEach((token) => checkinTokens.delete(token));
+    await retireOperatorCodes(userId, "clear-sessions");
 
     console.log(`✅ CLEAR-SESSIONS: All data cleared for ${userEmail}`);
 
@@ -2491,99 +2558,9 @@ router.post("/recover", authenticateToken, async (req, res) => {
       );
     }
 
-    // Recreate check-in timer
-    switchData.checkinTimer = setInterval(async () => {
-      try {
-        console.log(
-          `🔍 PERIODIC CHECK-IN: Timer fired for ${userEmail} (recovered)`,
-        );
-
-        if (!activeDeadmanSwitches.has(userEmail)) {
-          console.log(
-            `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${userEmail}, stopping timer`,
-          );
-          clearInterval(switchData.checkinTimer);
-          return;
-        }
-
-        const checkinToken = crypto.randomBytes(32).toString("hex");
-        checkinTokens.set(checkinToken, userEmail);
-
-        if (switchData.sessionToken) {
-          try {
-            await userService.updateSessionActivity(switchData.sessionToken);
-          } catch (error) {
-            console.error(
-              `Failed to update session activity during recovered check-in for ${userEmail}:`,
-              error,
-            );
-          }
-        }
-
-        // Deadline passed → the fire path owns this switch now (see the
-        // matching guard in /activate's timer).
-        if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
-          console.log(
-            `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
-          );
-          return;
-        }
-
-        const missedCount = await registerMissedCheckin(userEmail, switchData);
-
-        emailService
-          .sendCheckinEmail(userEmail, checkinToken, missedCount)
-          .then((emailSent) => {
-            if (!emailSent) {
-              console.error(
-                `❌ PERIODIC CHECK-IN: Failed to send recovered check-in email to ${userEmail}`,
-              );
-            } else {
-              console.log(
-                `✅ PERIODIC CHECK-IN: Recovered email sent successfully to ${userEmail}`,
-              );
-            }
-          })
-          .catch((error) => {
-            console.error(
-              `❌ PERIODIC CHECK-IN: Error sending recovered check-in email to ${userEmail}:`,
-              error,
-            );
-          });
-
-        const nextCheckinNow = Date.now();
-        switchData.nextCheckinTime = new Date(
-          nextCheckinNow + checkinIntervalMs,
-        );
-        switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-        console.log(
-          `📧 PERIODIC CHECK-IN: Recovered email sent for ${userEmail}, next check-in in ${checkinIntervalMs / 1000 / 60} minutes`,
-        );
-      } catch (error) {
-        console.error(
-          `❌ PERIODIC CHECK-IN: Critical error in recovered timer callback for ${userEmail}:`,
-          error,
-        );
-      }
-    }, checkinIntervalMs);
-
-    // Recreate deadman timer with MAX_TIMEOUT overflow protection
-    const MAX_TIMEOUT_RECOVER = 2147483647;
-    if (inactivityMs <= MAX_TIMEOUT_RECOVER) {
-      switchData.deadmanTimer = setTimeout(async () => {
-        const deadmanEmails = userEmails.get(userEmail) || emails;
-        await executeDeadmanActivation(userEmail, deadmanEmails);
-      }, inactivityMs);
-    } else {
-      switchData.deadmanTimer = setInterval(async () => {
-        const nowCheck = Date.now();
-        if (switchData.deadmanActivation - nowCheck <= 0) {
-          clearInterval(switchData.deadmanTimer);
-          const deadmanEmails = userEmails.get(userEmail) || emails;
-          await executeDeadmanActivation(userEmail, deadmanEmails);
-        }
-      }, 60000);
-    }
+    // Manual recovery is an operator action, so the schedule restarts from
+    // now — the same timers a check-in builds.
+    armTimers(userEmail, switchData);
 
     // Store the recovered switch
     activeDeadmanSwitches.set(userEmail, switchData);
@@ -2752,8 +2729,7 @@ router.get("/debug/status", (req, res) => {
   res.json({
     activeDeadmanSwitches: switches,
     userEmailsCount: userEmails.size,
-    checkinTokensCount: checkinTokens.size,
-    appUrl: process.env.APP_URL || "(not set — check-in links will use http://localhost:3000)",
+    inbound: inboundStatus(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -2774,9 +2750,12 @@ router.post("/debug/test-email", authenticateToken, async (req, res) => {
       });
     }
 
-    // Test sending a check-in email
-    const testToken = "test-token-123";
-    const emailSent = await emailService.sendCheckinEmail(userEmail, testToken);
+    // Test sending a check-in email. The code is random and never stored,
+    // so a reply to it is simply unrecognised.
+    const emailSent = await emailService.sendCheckinEmail(
+      userEmail,
+      formatCode(generateCode()),
+    );
 
     res.json({
       success: emailSent,
@@ -2826,14 +2805,7 @@ router.post("/reset", authenticateToken, async (req, res) => {
       deadmanActivationHistory.delete(userEmail);
     }
 
-    // Clear any check-in tokens for this user
-    const tokensToDelete = [];
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        tokensToDelete.push(token);
-      }
-    }
-    tokensToDelete.forEach((token) => checkinTokens.delete(token));
+    const retired = await retireOperatorCodes(req.user.userId, "reset");
 
     res.json({
       success: true,
@@ -2842,7 +2814,7 @@ router.post("/reset", authenticateToken, async (req, res) => {
         activeSwitch: true,
         emails: true,
         activationHistory: true,
-        tokens: tokensToDelete.length,
+        codes: retired,
       },
     });
   } catch (error) {
@@ -2854,434 +2826,599 @@ router.post("/reset", authenticateToken, async (req, res) => {
   }
 });
 
-// Check-in endpoint - handles check-in link clicks
-router.get("/checkin/:token", async (req, res) => {
+// ---- Timers (v2.2.0: one implementation for arming, check-in, recovery) ----
+
+const MAX_TIMEOUT = 2147483647; // setTimeout overflows above ~24.8 days
+
+function clearSwitchTimers(switchData) {
+  if (switchData.checkinTimer) {
+    clearInterval(switchData.checkinTimer);
+    clearTimeout(switchData.checkinTimer);
+    switchData.checkinTimer = null;
+  }
+  if (switchData.deadmanTimer) {
+    clearTimeout(switchData.deadmanTimer);
+    clearInterval(switchData.deadmanTimer);
+    switchData.deadmanTimer = null;
+  }
+}
+
+// Fire at switchData.deadmanActivation, with setInterval polling for
+// deadlines beyond what setTimeout can hold. Recipients are read at fire
+// time (never a closure snapshot) so recipient edits stay live.
+function scheduleDeadmanTimer(userEmail, switchData) {
+  const fire = async () => {
+    const deadmanEmails =
+      userEmails.get(userEmail) || (switchData.settings && switchData.settings.emails) || [];
+    await executeDeadmanActivation(userEmail, deadmanEmails, switchData);
+  };
+  const remaining = switchData.deadmanActivation - Date.now();
+  if (remaining <= MAX_TIMEOUT) {
+    switchData.deadmanTimer = setTimeout(fire, Math.max(0, remaining));
+  } else {
+    console.log(
+      `⚠️ LARGE TIMEOUT: Using interval checking for ${userEmail} (${remaining}ms > ${MAX_TIMEOUT}ms)`,
+    );
+    switchData.deadmanTimer = setInterval(async () => {
+      if (switchData.deadmanActivation - Date.now() <= 0) {
+        clearInterval(switchData.deadmanTimer);
+        await fire();
+      }
+    }, 60000);
+  }
+}
+
+// One periodic check-in tick: count the miss (and maybe warn), send the
+// next check-in email. Returns false when this timer should stop.
+async function periodicCheckinTick(userEmail, switchData, checkinIntervalMs, label) {
   try {
-    const { token } = req.params;
-
-    if (!checkinTokens.has(token)) {
-      const used = usedCheckinTokens.get(token);
-      if (used) {
-        // Reload of the confirmation page, or the same link clicked twice.
-        // Nothing to redo — say so, don't alarm.
-        return res.send(`
-          <html>
-            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-              <h2>✅ Already Checked In</h2>
-              <p>This link was already used at ${used.at.toLocaleString("en-US", { timeZone: "UTC" })} (UTC)${used.armed ? " — it armed your switch" : ""}.</p>
-              <p>Each check-in link works once. Nothing else is needed until your next check-in email arrives.</p>
-              <hr>
-              <p><small>You can close this window now.</small></p>
-            </body>
-          </html>
-        `);
-      }
-      return res.status(400).send(`
-        <html>
-          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-            <h2>❌ Invalid Check-In Link</h2>
-            <p>This check-in link is invalid or has expired.</p>
-            <p>Please use the latest check-in email.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    const userEmail = checkinTokens.get(token);
-
-    // Update activity time and reset both timers.
-    // Declared outside the block: the post-check-in save below needs it, and a
-    // block-scoped declaration made that save throw ReferenceError on every
-    // check-in, leaving the old expires_at in the DB until the next periodic
-    // save (or forever, for recovered switches the periodic save skips).
-    let switchData = null;
-    let wasPending = false;
-    if (activeDeadmanSwitches.has(userEmail)) {
-      switchData = activeDeadmanSwitches.get(userEmail);
-      switchData.lastActivity = new Date();
-      // A successful check-in fully re-establishes the switch state, so a
-      // switch recovered after a restart can rejoin the periodic save loop.
-      switchData.recovered = false;
-
-      // Completing the first check-in of a pending switch is the arming
-      // event: the whole loop just proved itself (email delivered, link
-      // reachable, token accepted), so the countdown may now exist. The
-      // timer rebuild below is the same for arming and for a routine reset.
-      wasPending = !!switchData.pending;
-      switchData.pending = false;
-
-      // Proof of life: reset the missed-check-in escalation, and stand the
-      // beneficiaries down if a pre-fire warning had already gone out.
-      await resetEscalationState(userEmail, switchData);
-
-      // Update session activity in database if session token exists
-      if (switchData.sessionToken) {
-        try {
-          await userService.updateSessionActivity(switchData.sessionToken);
-          console.log(
-            `✅ CHECK-IN BUTTON CLICKED: Database session activity updated for ${userEmail}`,
-          );
-        } catch (error) {
-          console.error(
-            `Failed to update session activity for ${userEmail}:`,
-            error,
-          );
-        }
-      }
-
-      // Reset check-in timer
+    console.log(`🔍 PERIODIC CHECK-IN: Timer fired for ${userEmail} (${label})`);
+    if (activeDeadmanSwitches.get(userEmail) !== switchData) {
+      console.log(
+        `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${userEmail}, stopping timer`,
+      );
       if (switchData.checkinTimer) {
         clearInterval(switchData.checkinTimer);
-        console.log(
-          `🔄 CHECK-IN BUTTON: Cleared existing check-in timer for ${userEmail}`,
-        );
+        clearTimeout(switchData.checkinTimer);
       }
-
-      // Reset deadman timer
-      if (switchData.deadmanTimer) {
-        clearTimeout(switchData.deadmanTimer);
-        console.log(
-          `🔄 CHECK-IN BUTTON: Cleared existing deadman timer for ${userEmail}`,
-        );
-      } else {
-        console.log(
-          `⚠️ CHECK-IN BUTTON: No deadman timer to clear for ${userEmail}`,
-        );
-      }
-
-      // Recreate check-in timer
-      const checkinIntervalMs = getIntervalMs(
-        switchData.settings.checkinInterval,
-      );
-      const now = Date.now();
-      switchData.nextCheckinTime = new Date(now + checkinIntervalMs);
-      switchData.nextCheckin = now + checkinIntervalMs;
-      console.log(
-        `⏰ CHECK-IN BUTTON: Created new check-in timer for ${userEmail} (${checkinIntervalMs / 1000 / 60} minutes)`,
-      );
-      switchData.checkinTimer = setInterval(async () => {
-        try {
-          console.log(
-            `🔍 PERIODIC CHECK-IN: Timer fired for ${userEmail} (from check-in button)`,
-          );
-
-          // Safety check: Don't send check-in emails if deadman switch is no longer active
-          if (!activeDeadmanSwitches.has(userEmail)) {
-            console.log(
-              `⚠️ PERIODIC CHECK-IN: Deadman switch no longer active for ${userEmail}, stopping timer`,
-            );
-            clearInterval(switchData.checkinTimer);
-            return;
-          }
-
-          // Verify switchData still exists
-          const currentSwitchData = activeDeadmanSwitches.get(userEmail);
-          if (!currentSwitchData) {
-            console.error(
-              `❌ PERIODIC CHECK-IN: Switch data missing for ${userEmail}, stopping timer`,
-            );
-            clearInterval(switchData.checkinTimer);
-            return;
-          }
-
-          console.log(
-            `✅ PERIODIC CHECK-IN: Switch data verified for ${userEmail}`,
-          );
-
-          const checkinToken = crypto.randomBytes(32).toString("hex");
-          checkinTokens.set(checkinToken, userEmail);
-
-          // Update session activity in database during periodic check-ins
-          if (switchData.sessionToken) {
-            try {
-              await userService.updateSessionActivity(switchData.sessionToken);
-              console.log(
-                `📝 PERIODIC CHECK-IN: Database session updated for ${userEmail}`,
-              );
-            } catch (error) {
-              console.error(
-                `Failed to update session activity during periodic check-in for ${userEmail}:`,
-                error,
-              );
-            }
-          }
-
-          // Deadline passed → the fire path owns this switch now (see the
-          // matching guard in /activate's timer).
-          if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
-            console.log(
-              `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
-            );
-            return;
-          }
-
-          console.log(`📧 PERIODIC CHECK-IN: Sending email to ${userEmail}`);
-
-          const missedCount = await registerMissedCheckin(
-            userEmail,
-            switchData,
-          );
-
-          emailService
-            .sendCheckinEmail(userEmail, checkinToken, missedCount)
-            .then((emailSent) => {
-              if (!emailSent) {
-                console.error(
-                  `❌ PERIODIC CHECK-IN: Failed to send check-in email to ${userEmail}`,
-                );
-              } else {
-                console.log(
-                  `✅ PERIODIC CHECK-IN: Email sent successfully to ${userEmail}`,
-                );
-              }
-            })
-            .catch((error) => {
-              console.error(
-                `❌ PERIODIC CHECK-IN: Error sending check-in email to ${userEmail}:`,
-                error,
-              );
-            });
-
-          // Update next check-in time
-          const nextCheckinNow = Date.now();
-          switchData.nextCheckinTime = new Date(
-            nextCheckinNow + checkinIntervalMs,
-          );
-          switchData.nextCheckin = nextCheckinNow + checkinIntervalMs;
-          // Deadman activation time should NOT be reset here
-          console.log(
-            `📧 PERIODIC CHECK-IN: Email sent for ${userEmail}, next check-in in ${checkinIntervalMs / 1000 / 60} minutes`,
-          );
-        } catch (error) {
-          console.error(
-            `❌ PERIODIC CHECK-IN: Critical error in timer callback for ${userEmail}:`,
-            error,
-          );
-          // Don't clear the timer on error, let it retry next time
-        }
-      }, checkinIntervalMs);
-
-      // Recreate deadman timer
-      const inactivityMs = getInactivityMs(
-        switchData.settings.inactivityPeriod,
-      );
-      switchData.deadmanActivation = now + inactivityMs;
-      console.log(
-        `⏰ CHECK-IN BUTTON: Created new deadman timer for ${userEmail} (${inactivityMs / 1000 / 60} minutes)`,
-      );
-      console.log(
-        `🔍 DEBUG: CHECK-IN BUTTON deadman activation set to: ${switchData.deadmanActivation} (current time: ${now})`,
-      );
-
-      // Use setInterval polling for inactivity periods > MAX_TIMEOUT (~24.8 days)
-      // to avoid Node.js setTimeout overflow that would fire immediately
-      const MAX_TIMEOUT = 2147483647;
-      if (inactivityMs <= MAX_TIMEOUT) {
-        switchData.deadmanTimer = setTimeout(async () => {
-          const deadmanEmails = userEmails.get(userEmail) || switchData.settings.emails || [];
-          await executeDeadmanActivation(userEmail, deadmanEmails);
-        }, inactivityMs);
-      } else {
-        switchData.deadmanTimer = setInterval(async () => {
-          const nowCheck = Date.now();
-          if (switchData.deadmanActivation - nowCheck <= 0) {
-            clearInterval(switchData.deadmanTimer);
-            const deadmanEmails = userEmails.get(userEmail) || switchData.settings.emails || [];
-            await executeDeadmanActivation(userEmail, deadmanEmails);
-          }
-        }, 60000);
-      }
+      return false;
     }
 
-    // Remove used token (remembering it so a re-click is explained, not rejected)
-    checkinTokens.delete(token);
-    rememberUsedCheckinToken(token, wasPending);
-    if (wasPending) {
-      console.log(
-        `🟢 ARMED: First check-in completed for ${userEmail} — countdown started`,
-      );
-
-      // First contact happens HERE, not at deploy: the switch now really
-      // exists and is counting down. Non-blocking — arming must not fail
-      // because a ping could not be sent.
-      const armedSwitch = activeDeadmanSwitches.get(userEmail);
-      if (armedSwitch) {
-        queueBeneficiaryPings(
-          armedSwitch.userId,
-          userEmail,
-          getRecipientsFor(userEmail, armedSwitch),
-          // Arming is explicit intent: contact everyone on this switch,
-          // including anyone carrying a stale unanswered ping from before.
-          true,
-        ).catch((error) =>
-          console.error(
-            `❌ PING: First-contact pass after arming failed for ${userEmail}:`,
-            error,
-          ),
-        );
-      }
-
-      notify(
-        `Switch ARMED for ${userEmail} — first check-in completed, the whole loop is verified and the countdown is now running.`,
-        { tags: "white_check_mark,shield" },
-      );
-    } else {
-      console.log(
-        `🎯 CHECK-IN COMPLETE: Both timers successfully reset for ${userEmail}`,
-      );
-    }
-
-    // Save updated timer state to database for persistence
-    if (switchData) {
+    if (switchData.sessionToken) {
       try {
-        await userService.saveTimerState(switchData.userId, {
-          nextCheckin: switchData.nextCheckin,
-          deadmanActivation: switchData.deadmanActivation,
-          lastActivity: switchData.lastActivity,
-        });
-        console.log(
-          `💾 PERSISTENCE: Timer state saved after check-in for ${userEmail}`,
-        );
+        await userService.updateSessionActivity(switchData.sessionToken);
       } catch (error) {
         console.error(
-          `❌ PERSISTENCE: Failed to save timer state after check-in for ${userEmail}:`,
+          `Failed to update session activity during periodic check-in for ${userEmail}:`,
           error,
         );
       }
     }
 
-    // Send success response
-    res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          ${
-            wasPending
-              ? `<h2>🟢 Switch Armed!</h2>
-          <p>Your first check-in is complete — the whole loop is verified:
-          the email reached you, the link opened, and your check-in registered.</p>
-          <p><strong>The countdown is now running.</strong> You'll receive
-          check-in emails at your configured interval.</p>`
-              : `<h2>✅ Check-In Successful!</h2>
-          <p>Thank you for checking in.</p>
-          <p>Your deadman switch timer has been reset.</p>`
-          }
-          <p>Last activity: ${new Date().toLocaleString()}</p>
-          <hr>
-          <p><small>You can close this window now.</small></p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error("Error processing check-in:", error);
-    res.status(500).send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h2>❌ Check-In Error</h2>
-          <p>An error occurred while processing your check-in.</p>
-          <p>Please try again or contact support.</p>
-        </body>
-      </html>
-    `);
-  }
-});
+    // Deadline passed → the fire path owns this switch now.
+    if (switchData.deadmanActivation && Date.now() >= switchData.deadmanActivation) {
+      console.log(
+        `⏭️ PERIODIC CHECK-IN: Deadman deadline passed for ${userEmail}, skipping check-in email`,
+      );
+      return true;
+    }
 
-// Beneficiary acknowledgment endpoint (Issue #2) — no auth, like /checkin.
-// One URL shape serves both token kinds: pre-fire warning acks and annual
-// liveness-ping acks. Acking proves the delivery path is alive end to end;
-// it neither triggers nor suppresses anything.
-router.get("/ack/:token", async (req, res) => {
-  const page = (title, body) => `
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h2>${title}</h2>
-          ${body}
-          <hr>
-          <p><small>You can close this window now.</small></p>
-        </body>
-      </html>
-    `;
+    const missedCount = await registerMissedCheckin(userEmail, switchData);
+
+    issueCheckinEmail(userEmail, switchData, { missedCheckins: missedCount })
+      .then((emailSent) => {
+        if (!emailSent) {
+          console.error(`❌ PERIODIC CHECK-IN: Failed to send check-in email to ${userEmail}`);
+        } else {
+          console.log(`✅ PERIODIC CHECK-IN: Email sent successfully to ${userEmail}`);
+        }
+      })
+      .catch((error) => {
+        console.error(`❌ PERIODIC CHECK-IN: Error sending check-in email to ${userEmail}:`, error);
+      });
+
+    const now = Date.now();
+    switchData.nextCheckinTime = new Date(now + checkinIntervalMs);
+    switchData.nextCheckin = now + checkinIntervalMs;
+    console.log(
+      `📧 PERIODIC CHECK-IN: Email issued for ${userEmail}, next check-in in ${checkinIntervalMs / 1000 / 60} minutes`,
+    );
+  } catch (error) {
+    console.error(`❌ PERIODIC CHECK-IN: Critical error in timer callback for ${userEmail}:`, error);
+    // Don't clear the timer on error, let it retry next time
+  }
+  return true;
+}
+
+// Fresh schedule from now: the operator just proved they are alive (or
+// explicitly re-armed). Used by every check-in and by manual recovery.
+function armTimers(userEmail, switchData) {
+  clearSwitchTimers(switchData);
+  const checkinIntervalMs = getIntervalMs(switchData.settings.checkinInterval);
+  const inactivityMs = getInactivityMs(switchData.settings.inactivityPeriod);
+  const now = Date.now();
+  switchData.pending = false;
+  switchData.nextCheckinTime = new Date(now + checkinIntervalMs);
+  switchData.nextCheckin = now + checkinIntervalMs;
+  switchData.deadmanActivation = now + inactivityMs;
+  switchData.checkinTimer = setInterval(
+    () => periodicCheckinTick(userEmail, switchData, checkinIntervalMs, "armed"),
+    checkinIntervalMs,
+  );
+  scheduleDeadmanTimer(userEmail, switchData);
+  console.log(
+    `⏰ TIMERS: ${userEmail} — check-in every ${checkinIntervalMs / 60000} min, deadline in ${inactivityMs / 60000} min`,
+  );
+}
+
+// Restart-recovery schedule: first tick at the persisted absolute time
+// (lastActivity + interval), then every interval; deadline as persisted.
+function startRecoveredTimers(userEmail, switchData, checkinIntervalMs, delayMs) {
+  clearSwitchTimers(switchData);
+  const tick = async () => {
+    const keepGoing = await periodicCheckinTick(userEmail, switchData, checkinIntervalMs, "recovered");
+    if (keepGoing && activeDeadmanSwitches.get(userEmail) === switchData) {
+      switchData.checkinTimer = setTimeout(tick, checkinIntervalMs);
+    }
+  };
+  switchData.checkinTimer = setTimeout(tick, Math.max(0, delayMs));
+  scheduleDeadmanTimer(userEmail, switchData);
+}
+
+// ---- Check-in (v2.2.0: one implementation, two callers) ----
+//
+// The operator proved they are alive: by replying with the code (the
+// poller, via "reply") or from the dashboard button (via "dashboard").
+// Completing the first check-in of a pending switch is the arming event —
+// the round trip just proved itself — and first contact with beneficiaries
+// happens here, never at deploy.
+async function performCheckin(userEmail, switchData, { via = "dashboard" } = {}) {
+  if (!switchData || activeDeadmanSwitches.get(userEmail) !== switchData) {
+    return { ok: false, reason: "no-switch" };
+  }
+  const wasPending = !!switchData.pending;
+  const now = new Date();
+  switchData.lastActivity = now;
+  switchData.lastCheckinVia = via;
+  switchData.lastCheckinAt = now;
+  // A successful check-in fully re-establishes the switch state, so a
+  // switch recovered after a restart can rejoin the periodic save loop.
+  switchData.recovered = false;
+  switchData.pending = false;
+
+  // Proof of life: reset the missed-check-in escalation, and stand the
+  // beneficiaries down if a pre-fire warning had already gone out.
+  await resetEscalationState(userEmail, switchData);
+
+  if (switchData.sessionToken) {
+    try {
+      await userService.updateSessionActivity(switchData.sessionToken);
+      await userService.setLastCheckinVia(switchData.sessionToken, via);
+    } catch (error) {
+      console.error(`Failed to update session activity for ${userEmail}:`, error);
+    }
+  }
+
+  armTimers(userEmail, switchData);
+
+  if (wasPending) {
+    console.log(
+      `🟢 ARMED: First check-in completed for ${userEmail} (via ${via}) — countdown started`,
+    );
+    // First contact happens HERE, not at deploy: the switch now really
+    // exists and is counting down. Non-blocking — arming must not fail
+    // because a ping could not be sent.
+    queueBeneficiaryPings(
+      switchData.userId,
+      userEmail,
+      getRecipientsFor(userEmail, switchData),
+      // Arming is explicit intent: contact everyone on this switch,
+      // including anyone carrying a stale unanswered ping from before.
+      true,
+    ).catch((error) =>
+      console.error(`❌ PING: First-contact pass after arming failed for ${userEmail}:`, error),
+    );
+    notify(
+      `Switch ARMED for ${userEmail} — first check-in completed (via ${via})${via === "reply" ? ", the whole loop is verified" : ""} and the countdown is now running.`,
+      { tags: "white_check_mark,shield" },
+    );
+  } else {
+    console.log(`🎯 CHECK-IN COMPLETE (via ${via}): Both timers reset for ${userEmail}`);
+  }
+
   try {
-    const { token } = req.params;
-
-    // Pre-fire warning ack?
-    const session = await userService.ackWarningByToken(token);
-    if (session) {
-      const switchData = activeDeadmanSwitches.get(session.email);
-      if (switchData && switchData.warningAckToken === token) {
-        switchData.warningAckAt = new Date();
-      }
-      console.log(
-        `🔷 ACK: Pre-fire warning acknowledged for ${session.email}`,
-      );
-      return res.send(
-        page(
-          "Warning received — thank you",
-          `<p>Your receipt of the warning has been recorded.</p>
-           <p><strong>Please keep trying to reach ${session.email}</strong> by phone,
-           through family or friends, or in person. If you reach them, tell them to
-           check in with their Deploy system immediately.</p>
-           <p>If they do not check in, their prepared message will be sent to you
-           automatically — you will not need to do anything to receive it.</p>`,
-        ),
-      );
-    }
-
-    // Annual liveness-ping ack?
-    const ping = await userService.ackBeneficiaryPingByToken(token);
-    if (ping) {
-      console.log(
-        `🔷 ACK: Annual liveness ping acknowledged for ${ping.email}`,
-      );
-      // The row is read before ack_at is stamped, so a null here means this
-      // click is the one that confirmed the cycle — repeat clicks skip the
-      // operator notice. First contact vs annual renewal is distinguished by
-      // whether this row was created for this ping (created_at ≈ ping_sent_at)
-      // or is an old row on a fresh cycle.
-      if (!ping.ack_at) {
-        const firstContact =
-          Math.abs(
-            parseDbTimestamp(ping.ping_sent_at).getTime() -
-              parseDbTimestamp(ping.created_at).getTime(),
-          ) < 120000;
-        emailService
-          .sendPingConfirmedNotice(ping.email, firstContact)
-          .catch((error) =>
-            console.error(
-              `❌ ACK: Ping-confirmed notice to ${ping.email} failed:`,
-              error,
-            ),
-          );
-      }
-      return res.send(
-        page(
-          "Address confirmed — thank you",
-          `<p>You've confirmed this email address still works. Nothing else is
-           needed, and nothing has been sent or triggered.</p>
-           <p>Expect the next verification in about a year.</p>`,
-        ),
-      );
-    }
-
-    res
-      .status(400)
-      .send(
-        page(
-          "Invalid confirmation link",
-          "<p>This confirmation link is invalid or was superseded by a newer one. Please use the link from the most recent email.</p>",
-        ),
-      );
+    await userService.saveTimerState(switchData.userId, {
+      nextCheckin: switchData.nextCheckin,
+      deadmanActivation: switchData.deadmanActivation,
+      lastActivity: switchData.lastActivity,
+    });
+    console.log(`💾 PERSISTENCE: Timer state saved after check-in for ${userEmail}`);
   } catch (error) {
-    console.error("Error processing acknowledgment:", error);
-    res
-      .status(500)
-      .send(
-        page(
-          "Error",
-          "<p>An error occurred while recording your confirmation. Please try the link again.</p>",
-        ),
-      );
+    console.error(`❌ PERSISTENCE: Failed to save timer state after check-in for ${userEmail}:`, error);
+  }
+
+  return { ok: true, wasPending };
+}
+
+// Dashboard check-in — the operator's fallback when email is broken, and
+// the only remote-free path. Arms a pending switch too (the spec makes the
+// button and the poller equivalent), so the frontend warns that arming
+// this way skips the email dry run.
+router.post("/checkin", authenticateToken, async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const switchData = activeDeadmanSwitches.get(userEmail);
+    if (!switchData) {
+      return res.status(400).json({ message: "No active deadman switch found for this user" });
+    }
+    const result = await performCheckin(userEmail, switchData, { via: "dashboard" });
+    if (!result.ok) {
+      return res.status(400).json({ message: "Check-in could not be recorded" });
+    }
+    res.json({
+      success: true,
+      wasPending: result.wasPending,
+      via: "dashboard",
+      lastActivity: switchData.lastActivity,
+      nextCheckin: switchData.nextCheckin,
+      deadmanActivation: switchData.deadmanActivation,
+      message: result.wasPending
+        ? "Switch armed from the dashboard. The countdown is now running. Note: the email round trip has not been proven — reply to the next check-in email to be sure."
+        : "Check-in recorded. Your timers have been reset.",
+    });
+  } catch (error) {
+    console.error("Error processing dashboard check-in:", error);
+    res.status(500).json({ message: "Failed to record check-in" });
   }
 });
+
+// ---- Beneficiary acknowledgement (v2.2.0: by reply code) ----
+//
+// Acking proves the delivery path is alive end to end; it neither triggers
+// nor suppresses anything. `codeRow` is a live reply_codes row of kind
+// ping-ack (ref = beneficiary_pings.id) or warning-ack (ref = session).
+async function performAck(codeRow) {
+  if (codeRow.kind === "ping-ack") {
+    const ping = await userService.ackBeneficiaryPingById(parseInt(codeRow.ref, 10));
+    if (!ping) return { ok: false, kind: "ping-ack", reason: "no-ping-row" };
+    console.log(`🔷 ACK: Liveness ping acknowledged for ${ping.email} (by reply)`);
+    // The row is read before ack_at is stamped, so a null here means this
+    // reply is the one that confirmed the cycle — repeats skip the operator
+    // notice. First contact vs annual renewal is distinguished by whether
+    // the row was created for this ping.
+    if (!ping.ack_at) {
+      const firstContact =
+        Math.abs(
+          parseDbTimestamp(ping.ping_sent_at).getTime() -
+            parseDbTimestamp(ping.created_at).getTime(),
+        ) < 120000;
+      emailService
+        .sendPingConfirmedNotice(ping.email, firstContact)
+        .catch((error) =>
+          console.error(`❌ ACK: Ping-confirmed notice to ${ping.email} failed:`, error),
+        );
+    }
+    return { ok: true, kind: "ping-ack", alreadyAcked: !!ping.ack_at };
+  }
+
+  if (codeRow.kind === "warning-ack") {
+    const session = await userService.ackWarningBySession(codeRow.ref);
+    const switchData = activeDeadmanSwitches.get(codeRow.user_email);
+    if (switchData && switchData.sessionToken === codeRow.ref) {
+      switchData.warningAckAt = switchData.warningAckAt || new Date();
+    }
+    console.log(`🔷 ACK: Pre-fire warning acknowledged for ${codeRow.user_email} (by reply)`);
+    return { ok: !!session || !!switchData, kind: "warning-ack" };
+  }
+
+  return { ok: false, kind: codeRow.kind, reason: "not-an-ack-kind" };
+}
+
+// ---- Inbound reply handling (v2.2.0) ----
+//
+// Called by utils/inboundMail.js for every new message (and by the sandbox
+// test hook). Returns a small result object for logs and tests. Rules that
+// hold always: bounces and auto-replies are dropped before anything; a
+// code counts only outside quoted text; the sender must be the address the
+// email went to; unrecognised mail is never answered.
+
+const OPERATOR_KINDS = new Set(["arming", "checkin"]);
+
+function receiptOnce(codeId, type) {
+  const key = `${codeId}:${type}`;
+  if (receiptsSent.has(key)) return false;
+  receiptsSent.add(key);
+  if (receiptsSent.size > 5000) receiptsSent.clear();
+  return true;
+}
+
+function reissueAllowed(userId) {
+  const last = lastInboundReissueAt.get(userId) || 0;
+  if (Date.now() - last < REISSUE_MIN_GAP_MS) return false;
+  lastInboundReissueAt.set(userId, Date.now());
+  return true;
+}
+
+function utcClock(d = new Date()) {
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
+}
+
+// The plaintext address a beneficiary-kind code was sent to. Beneficiary
+// addresses are only ever persisted hashed; the plaintext lives in the
+// armed switch's recipient list, or in the session's server-key envelope.
+async function resolveRecipientAddress(codeRow) {
+  const switchData = activeDeadmanSwitches.get(codeRow.user_email);
+  const lists = [];
+  if (switchData) lists.push(getRecipientsFor(codeRow.user_email, switchData));
+  try {
+    const session = await userService.getActiveSession(codeRow.user_id);
+    if (session && session.server_encrypted_emails) {
+      lists.push(cryptoUtils.decryptEmailsWithServerKey(session.server_encrypted_emails));
+    }
+  } catch (_) {}
+  for (const list of lists) {
+    for (const r of list || []) {
+      const addr = r.to || r.address;
+      if (addr && hashEmail(addr) === codeRow.recipient_hash) return addr;
+    }
+  }
+  return null;
+}
+
+// Fresh email for whatever a code stood for. Rate limited per operator.
+// Returns true when a new email went out.
+async function reissueFor(codeRow, { why }) {
+  if (!reissueAllowed(codeRow.user_id)) {
+    console.log(`⏳ REISSUE: rate limit for user ${codeRow.user_id} (${why}) — not reissuing`);
+    return false;
+  }
+  const userEmail = codeRow.user_email;
+  const switchData = activeDeadmanSwitches.get(userEmail);
+  if (OPERATOR_KINDS.has(codeRow.kind)) {
+    if (!switchData) return false;
+    console.log(`🔁 REISSUE: fresh ${switchData.pending ? "arming" : "check-in"} email for ${userEmail} (${why})`);
+    return issueCheckinEmail(userEmail, switchData, {
+      arming: !!switchData.pending,
+      reminder: false,
+      missedCheckins: switchData.missedCheckins || 0,
+    });
+  }
+  const addr = await resolveRecipientAddress(codeRow);
+  if (!addr) return false;
+  if (codeRow.kind === "ping-ack") {
+    const ping = await userService.getBeneficiaryPing(codeRow.user_id, codeRow.recipient_hash);
+    if (ping && ping.ack_at) return false; // already confirmed — nothing to reissue
+    console.log(`🔁 REISSUE: fresh address-check email for ${userEmail}'s recipient (${why})`);
+    return sendPingTo(codeRow.user_id, userEmail, addr, true);
+  }
+  if (codeRow.kind === "warning-ack") {
+    if (!switchData || switchData.sessionToken !== codeRow.ref || switchData.warningAckAt) return false;
+    console.log(`🔁 REISSUE: fresh warning email for ${userEmail}'s recipient (${why})`);
+    return sendWarningTo(userEmail, switchData, addr, true);
+  }
+  return false;
+}
+
+async function handleInbound(parsed, meta = {}) {
+  const from = fromAddress(parsed);
+  const messageId = parsed.messageId || null;
+  const threading = { inReplyTo: messageId, references: parsed.references || messageId };
+
+  if (isBounce(parsed)) return { action: "dropped", reason: "bounce" };
+  if (isAutoReply(parsed)) return { action: "dropped", reason: "auto-reply" };
+  if (rawHeader(parsed, "x-deploy-deadman") !== null) return { action: "dropped", reason: "own-mail" };
+  if (!from) return { action: "dropped", reason: "no-from" };
+
+  const text = visibleText(parsed);
+  const candidates = extractCodes(parsed.subject, text);
+  if (candidates.length === 0) return { action: "dropped", reason: "no-code" };
+
+  const fromHash = hashEmail(from);
+
+  // 1. A live code among the candidates?
+  let live = null;
+  for (const c of candidates) {
+    live = await userService.findLiveCode(hashCode(c));
+    if (live) break;
+  }
+
+  if (live) {
+    if (live.recipient_hash && live.recipient_hash !== fromHash) {
+      // Right code, wrong sender. Tell the ORIGINAL address, once: silence
+      // here would let the operator believe they had checked in.
+      const original = OPERATOR_KINDS.has(live.kind)
+        ? live.user_email
+        : await resolveRecipientAddress(live);
+      console.warn(
+        `🚫 INBOUND: ${live.kind} code for user ${live.user_id} arrived from ${from}, not the address it was sent to — rejected`,
+      );
+      if (original && receiptOnce(live.id, "mismatch")) {
+        const isOperator = OPERATOR_KINDS.has(live.kind);
+        await emailService.sendReceipt(
+          original,
+          "A reply with your Deploy code was not accepted",
+          `A reply with your code arrived from ${from} and was not accepted. Reply from ${original}${isOperator ? ", or check in from the dashboard" : ""}.`,
+        );
+      }
+      return { action: "rejected", reason: "from-mismatch", kind: live.kind };
+    }
+
+    if (OPERATOR_KINDS.has(live.kind)) {
+      const switchData = activeDeadmanSwitches.get(live.user_email);
+      if (!switchData || (live.ref && switchData.sessionToken !== live.ref)) {
+        // The switch this code belonged to is gone (deactivated, fired,
+        // re-deployed). Nothing to check in to.
+        await userService.retireCode(live.id);
+        if (receiptOnce(live.id, "gone")) {
+          await emailService.sendReceipt(
+            live.user_email,
+            "That Deploy code has expired",
+            "That code has expired — the switch it belonged to is no longer running. Log in to your Deploy dashboard to see its state.",
+            threading,
+          );
+        }
+        return { action: "expired", reason: "switch-gone", kind: live.kind };
+      }
+      const result = await performCheckin(live.user_email, switchData, { via: "reply" });
+      await userService.markCodeUsed(live.id);
+      if (result.ok && receiptOnce(live.id, "ok")) {
+        const due = emailService.dateStamp(new Date(switchData.nextCheckin));
+        await emailService.sendReceipt(
+          live.user_email,
+          result.wasPending ? "Deploy switch armed" : "Deploy check-in received",
+          result.wasPending
+            ? `Switch armed at ${utcClock()} — the whole round trip is verified and the countdown is running. Next check-in due ${due}.`
+            : `Check-in received at ${utcClock()} — next check-in due ${due}.`,
+          threading,
+        );
+      }
+      return { action: "checkin", wasPending: result.wasPending, via: "reply" };
+    }
+
+    // ping-ack / warning-ack
+    const ack = await performAck(live);
+    await userService.markCodeUsed(live.id);
+    if (ack.ok && receiptOnce(live.id, "ok")) {
+      await emailService.sendReceipt(
+        from,
+        "Confirmed — thank you",
+        "Confirmed — thank you. Nothing has been sent or triggered and nothing else is needed.",
+        threading,
+      );
+    }
+    return { action: "ack", kind: live.kind, ok: ack.ok };
+  }
+
+  // 2. A stale (used or retired) code?
+  let stale = null;
+  for (const c of candidates) {
+    stale = await userService.findCodeByHash(hashCode(c));
+    if (stale) break;
+  }
+  if (stale) {
+    if (stale.recipient_hash && stale.recipient_hash !== fromHash) {
+      // Someone else's old code. Nothing to say to a stranger.
+      return { action: "dropped", reason: "stale-from-mismatch" };
+    }
+    if (stale.used_at) {
+      // The same code sent twice (a reload, a nervous beneficiary). Say so
+      // once; nothing else changes.
+      if (receiptOnce(stale.id, "repeat")) {
+        if (OPERATOR_KINDS.has(stale.kind)) {
+          await emailService.sendReceipt(
+            from,
+            "That Deploy code was already used",
+            `That code was already used — your check-in at ${utcClock(parseDbTimestamp(stale.used_at))} was recorded. Nothing else is needed until your next check-in email.`,
+            threading,
+          );
+        } else {
+          await emailService.sendReceipt(
+            from,
+            "Confirmed — thank you",
+            "Confirmed — thank you. Nothing has been sent or triggered and nothing else is needed.",
+            threading,
+          );
+        }
+      }
+      return { action: "repeat", kind: stale.kind };
+    }
+    // Retired: superseded by a newer email, or cancelled after wrong guesses.
+    const reissued = await reissueFor(stale, { why: "stale code" });
+    if (receiptOnce(stale.id, "expired")) {
+      await emailService.sendReceipt(
+        from,
+        "That Deploy code has expired",
+        reissued
+          ? "That code has expired — a fresh email with a new code is on its way."
+          : "That code has expired. Please use the code from the most recent email from Deploy.",
+        threading,
+      );
+    }
+    return { action: "expired", kind: stale.kind, reissued };
+  }
+
+  // 3. Unknown code. Only a sender who holds a live code is answered at all;
+  // for everyone else this is unrecognised mail and gets silence.
+  const senderCodes = await userService.liveCodesForRecipientHash(fromHash);
+  if (senderCodes.length === 0) return { action: "dropped", reason: "unknown-sender" };
+  const target =
+    senderCodes.find((r) => OPERATOR_KINDS.has(r.kind)) ||
+    senderCodes.find((r) => r.kind === "warning-ack") ||
+    senderCodes[0];
+  const attempts = await userService.bumpFailedAttempts(target.id);
+  console.warn(
+    `🚫 INBOUND: wrong code from ${from} (attempt ${attempts}/${MAX_FAILED_ATTEMPTS} against live ${target.kind} code)`,
+  );
+  if (attempts >= MAX_FAILED_ATTEMPTS) {
+    await userService.retireCode(target.id);
+    const reissued = await reissueFor(target, { why: "wrong-guess lockout" });
+    if (receiptOnce(target.id, "lockout")) {
+      await emailService.sendReceipt(
+        from,
+        "That Deploy code didn't match",
+        reissued
+          ? `That code didn't match. After ${MAX_FAILED_ATTEMPTS} wrong tries it was cancelled — a fresh email with a new code is on its way.`
+          : `That code didn't match. After ${MAX_FAILED_ATTEMPTS} wrong tries it was cancelled; a new one will come with the next scheduled email.`,
+        threading,
+      );
+    }
+    return { action: "wrong-code", attempts, lockedOut: true, reissued };
+  }
+  if (receiptOnce(target.id, "wrong")) {
+    await emailService.sendReceipt(from, "That Deploy code didn't match", "That code didn't match.", threading);
+  }
+  return { action: "wrong-code", attempts, lockedOut: false };
+}
+
+// Dashboard-facing summary of the inbound connection.
+function inboundStatus() {
+  const st = inboundMail.getState();
+  return {
+    enabled: st.enabled,
+    configured: st.configured,
+    connected: st.connected,
+    lastCheckedAt: st.lastCheckedAt,
+    downSince: st.downSince,
+    error: st.error,
+    host: st.host,
+    user: st.user,
+    folders: st.folders,
+    holdCapDays: INBOUND_HOLD_CAP_MS / 86400000,
+    testHooks: process.env.DEPLOY_TEST_HOOKS === "1",
+  };
+}
+
+router.get("/inbound-status", authenticateToken, (req, res) => {
+  res.json({ success: true, ...inboundStatus() });
+});
+
+// Start the IMAP reader (once the DB is up and recovery has re-armed the
+// switches — see the recovery timer above).
+let inboundStarted = false;
+function startInboundMail() {
+  if (inboundStarted) return;
+  inboundStarted = true;
+  const st = inboundMail.getState();
+  if (!st.enabled) {
+    console.warn("⚠️ REPLY_BY_EMAIL=false — replies are NOT read; the dashboard is the only check-in path");
+    return;
+  }
+  if (!st.configured) {
+    console.warn(
+      "⚠️ IMAP not configured — replies to check-in emails cannot be received. Set IMAP_HOST/IMAP_USER/IMAP_PASS (Gmail: derived from EMAIL_USER/EMAIL_PASS).",
+    );
+  }
+  inboundMail
+    .start({
+      store: {
+        get: (k) => userService.getSetting(k),
+        set: (k, v) => userService.setSetting(k, v),
+        del: (k) => userService.deleteSetting(k),
+      },
+      onMessage: handleInbound,
+    })
+    .catch((error) => console.error("❌ IMAP: failed to start:", error));
+}
 
 // Debug endpoints for troubleshooting
 router.get("/debug/active-switches", authenticateToken, (req, res) => {
@@ -3303,10 +3440,8 @@ router.get("/debug/active-switches", authenticateToken, (req, res) => {
             : 0,
         }
       : null,
-    checkinTokens: Array.from(checkinTokens.entries()).filter(
-      ([token, email]) => email === userEmail,
-    ).length,
     userEmailsCount: (userEmails.get(userEmail) || []).length,
+    inbound: inboundStatus(),
   });
 });
 
@@ -3337,10 +3472,16 @@ router.post("/nuclear-reset", authenticateToken, async (req, res) => {
     }
     userEmails.delete(userEmail);
     deadmanActivationHistory.delete(userEmail);
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) checkinTokens.delete(token);
-    }
     console.log(`💥 NUCLEAR-RESET: Cleared memory for ${userEmail}`);
+
+    // Every code this user's emails ever carried, operator- and
+    // beneficiary-side, stops working (same cascade as delete-account).
+    try {
+      const n = await userService.retireCodes({ userId });
+      console.log(`💥 NUCLEAR-RESET: Retired ${n} live code(s)`);
+    } catch (error) {
+      console.error(`💥 NUCLEAR-RESET: Could not retire codes:`, error);
+    }
 
     // 2. Clear database session
     try {
@@ -3389,13 +3530,7 @@ router.post("/force-clear", authenticateToken, async (req, res) => {
     // Clear all related data
     userEmails.delete(userEmail);
     deadmanActivationHistory.delete(userEmail);
-
-    // Clear check-in tokens for this user
-    for (const [token, email] of checkinTokens.entries()) {
-      if (email === userEmail) {
-        checkinTokens.delete(token);
-      }
-    }
+    retireOperatorCodes(userId, "force-clear");
 
     // Clear database emails by updating user data with empty emails
     try {
@@ -3469,3 +3604,6 @@ router.post("/test/validate-interval", (req, res) => {
 });
 
 module.exports = router;
+// For server.js: the sandbox test hook and the config-save reconfigure.
+router.handleInbound = handleInbound;
+router.inboundStatus = inboundStatus;
