@@ -10,12 +10,12 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       `start9/manifest.yaml` (release notes prepended, same style as 2.1.10).
 
 ## 1. Codes (`utils/codes.js` + `tests/codes.test.js`)
-- [ ] `ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"`, `generateCode()` →
+- [x] `ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"`, `generateCode()` →
       8 chars via `crypto.randomInt`, `formatCode()` → `XXXX-XXXX`,
       `normalizeCode(s)` → uppercase, strip `-`/spaces/punctuation,
       `hashCode(code)` → sha256 hex of normalized, `CODE_REGEX` matching
       the alphabet with optional single separator after 4 chars.
-- [ ] Tests: alphabet has no 0/O/1/I/L; round-trip; normalisation of lower
+- [x] Tests: alphabet has no 0/O/1/I/L; round-trip; normalisation of lower
       case, no hyphen, trailing period, autocorrected spacing.
 
 ## 2. Persistence (`database/init.js`, `database/userService.js`)
