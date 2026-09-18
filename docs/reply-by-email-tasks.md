@@ -19,18 +19,18 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       case, no hyphen, trailing period, autocorrected spacing.
 
 ## 2. Persistence (`database/init.js`, `database/userService.js`)
-- [ ] New table `reply_codes(id, code_hash UNIQUE, kind
+- [x] New table `reply_codes(id, code_hash UNIQUE, kind
       ['arming','checkin','ping-ack','warning-ack'], user_id,
       recipient_hash, ref TEXT, created_at, used_at, retired_at,
       failed_attempts INTEGER DEFAULT 0)`. `ref` = session_token for
       arming/checkin/warning-ack, beneficiary_pings.id for ping-ack.
       `recipient_hash` = sha256(lowercased address the email went to).
-- [ ] `issueCode({kind,userId,recipientHash,ref})` retires (retired_at=now)
+- [x] `issueCode({kind,userId,recipientHash,ref})` retires (retired_at=now)
       any live code with the same (user_id, kind[, ref]) and inserts the new
       one; returns the plaintext code once.
-- [ ] `findLiveCode(hash)`, `markCodeUsed(id)`, `bumpFailedAttempts(id)`
+- [x] `findLiveCode(hash)`, `markCodeUsed(id)`, `bumpFailedAttempts(id)`
       (returns new count), `retireCode(id)`, `liveCodeFor(userId, kind, ref)`.
-- [ ] `settings` rows for inbound state: `imap:<folder>:uidvalidity`,
+- [x] `settings` rows for inbound state: `imap:<folder>:uidvalidity`,
       `imap:<folder>:lastuid`, `imap:down_since`, `migrated_reply_codes`.
 - [ ] Add `reply_codes.user_id` to the cascade-delete paths (nuclear reset,
       delete account) alongside beneficiary_pings.

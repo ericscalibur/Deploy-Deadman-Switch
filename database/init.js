@@ -97,6 +97,30 @@ function initializeDatabase() {
             );
         `;
 
+        // Reply codes (v2.2.0): the code a reader types back to Deploy IS the
+        // token, stored only as sha256(normalized code). One row per code
+        // issued; a code is live while used_at and retired_at are both NULL.
+        //   kind: arming | checkin | ping-ack | warning-ack
+        //   ref:  session_token for arming/checkin/warning-ack,
+        //         beneficiary_pings.id for ping-ack
+        //   recipient_hash: sha256(lower-cased address the email went to);
+        //         a reply only counts when From hashes to this.
+        const createReplyCodesTable = `
+            CREATE TABLE IF NOT EXISTS reply_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash TEXT UNIQUE NOT NULL,
+                kind TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                recipient_hash TEXT,
+                ref TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                used_at DATETIME,
+                retired_at DATETIME,
+                failed_attempts INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            );
+        `;
+
         // Key-value store for service-level config (set via Start9 Config UI)
         const createSettingsTable = `
             CREATE TABLE IF NOT EXISTS settings (
@@ -126,7 +150,8 @@ function initializeDatabase() {
             'CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON deadman_sessions(user_id);',
             'CREATE INDEX IF NOT EXISTS idx_sessions_active ON deadman_sessions(is_active);',
             'CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id);',
-            'CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);'
+            'CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);',
+            'CREATE INDEX IF NOT EXISTS idx_reply_codes_live ON reply_codes(user_id, kind, used_at, retired_at);'
         ];
 
         // Execute table creation
@@ -185,6 +210,15 @@ function initializeDatabase() {
                 console.log('Beneficiary pings table created or already exists');
             });
 
+            db.run(createReplyCodesTable, (err) => {
+                if (err) {
+                    console.error('Error creating reply codes table:', err.message);
+                    reject(err);
+                    return;
+                }
+                console.log('Reply codes table created or already exists');
+            });
+
             // Migration: add server_encrypted_emails to existing deadman_sessions
             // tables (CREATE TABLE IF NOT EXISTS won't add columns to older DBs).
             // Issued as a single serialized statement so it completes before
@@ -205,6 +239,10 @@ function initializeDatabase() {
                 // memory.
                 'ALTER TABLE deadman_sessions ADD COLUMN triggered_at DATETIME;',
                 'ALTER TABLE deadman_sessions ADD COLUMN triggered_emails_sent INTEGER;',
+                // v2.2.0: how the last check-in arrived ("reply" | "dashboard")
+                // and when, so the dashboard can say so after a restart.
+                'ALTER TABLE deadman_sessions ADD COLUMN last_checkin_via TEXT;',
+                'ALTER TABLE deadman_sessions ADD COLUMN last_checkin_at DATETIME;',
             ];
             sessionColumnMigrations.forEach((sql) => {
                 const column = sql.match(/ADD COLUMN (\w+)/)[1];
