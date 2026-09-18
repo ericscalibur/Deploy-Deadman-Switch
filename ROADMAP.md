@@ -21,6 +21,30 @@ automatically with the next version bump.
   now" is the operator's at-home fallback. Buttons, links, `/checkin/:token`
   and `/ack/:token` are removed; emails no longer contain `APP_URL` at all.
   Absorbs the hashed-token item below.
+- **Self-backup by email** (after v2.2.0; needs its IMAP): a wiped data
+  volume — StartOS #3650 on a failed package update, a dead laptop disk, a
+  VPS reprovision — silently deletes an armed switch, and Deploy cannot
+  even report it because the mail credentials, ntfy topic and SECRET_KEY
+  live in the same volume. Fix: after every change to user data
+  (recipients, settings, arming, ping/ack state, fire) and at least daily,
+  Deploy emails its own mailbox an encrypted snapshot of the SQLite
+  database, encrypted with SECRET_KEY (already the at-rest key for the
+  server-recoverable envelope). Subject `Deploy backup — <date UTC>`,
+  attachment `deploy-backup-<ts>.enc`, sizes are tens of KB. Restore: on a
+  fresh install the setup screen asks for the mail credentials and the
+  SECRET_KEY; Deploy fetches the newest backup over IMAP, decrypts,
+  restores, and resumes every countdown from the snapshot's timers.
+  Requires the operator to keep SECRET_KEY offline — show it once at first
+  setup with "write this down; it is the only way to restore", and repeat
+  the reminder on the dashboard until acknowledged. Invisible to
+  beneficiaries, one email a day at most to the operator's own account
+  (recommend a Gmail filter/label in the docs). Same principle as
+  reply-by-email: the one channel Deploy already requires is made
+  sufficient — this time for the data, not the links.
+- **Until self-backup ships (ops rule, document in START9_README.md)**:
+  take a StartOS backup before sideloading any Deploy update; after the
+  update, log in and confirm the switch is still armed and the onion
+  address under Interfaces has not changed.
 - **Persist check-in tokens (hashed) in the DB** — absorbed into the
   email-reply item above (the code is the token; stored hashed). Original
   motivation: tokens live in memory, so any restart invalidates every
