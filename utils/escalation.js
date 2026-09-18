@@ -13,18 +13,46 @@ const DEFAULT_WARNING_MISSED_CHECKINS = 5;
 const DEFAULT_PING_INTERVAL_DAYS = 365;
 const DEFAULT_PING_ACK_GRACE_DAYS = 30;
 
+// A "missed" check-in is counted at the tick that SENDS a check-in email
+// (the tick proves a full interval passed since the last response). So
+// missed = 1 means "the first check-in email has just gone out" — the
+// operator has not failed to answer anything yet. A warning is only truthful
+// once at least one check-in email has gone a full interval unanswered,
+// i.e. missed >= 2. Never warn below that, whatever the configuration.
+const MIN_WARNING_MISSED_CHECKINS = 2;
+
 // The configured threshold assumes the inactivity period holds many check-in
 // intervals. When it does not (1-week check-ins with a 1-month deadline, or a
 // compressed test run), a fixed count would never be reached and the switch
 // would fire with no warning at all. Clamp the threshold so the warning goes
 // out no later than the second-to-last tick before the deadline (leaving one
-// tick for a resend), and always by the first tick when only one fits.
+// tick for a resend) — but never below MIN_WARNING_MISSED_CHECKINS. With a
+// deadline of two check-in intervals or less no truthful warning is possible
+// and none is sent; warningPossible() lets the UI say so at deploy time.
 function effectiveWarningThreshold({ threshold, checkinIntervalMs, inactivityMs }) {
   if (!checkinIntervalMs || !inactivityMs || inactivityMs <= checkinIntervalMs) {
-    return Math.max(1, threshold);
+    return Math.max(MIN_WARNING_MISSED_CHECKINS, threshold);
   }
   const ticksBeforeFire = Math.ceil(inactivityMs / checkinIntervalMs) - 1;
-  return Math.max(1, Math.min(threshold, ticksBeforeFire - 1));
+  return Math.max(
+    MIN_WARNING_MISSED_CHECKINS,
+    Math.min(threshold, ticksBeforeFire - 1),
+  );
+}
+
+// Number of check-in ticks that occur strictly before the deadline.
+function ticksBeforeFire({ checkinIntervalMs, inactivityMs }) {
+  if (!checkinIntervalMs || !inactivityMs) return 0;
+  return Math.max(0, Math.ceil(inactivityMs / checkinIntervalMs) - 1);
+}
+
+// Will a pre-fire warning ever be sent with these periods? False when the
+// inactivity period is not more than twice the check-in interval.
+function warningPossible({ threshold, checkinIntervalMs, inactivityMs }) {
+  return (
+    ticksBeforeFire({ checkinIntervalMs, inactivityMs }) >=
+    effectiveWarningThreshold({ threshold, checkinIntervalMs, inactivityMs })
+  );
 }
 
 // Decide what to do about the pre-fire warning at a periodic check-in tick.
@@ -69,7 +97,10 @@ module.exports = {
   DEFAULT_WARNING_MISSED_CHECKINS,
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,
+  MIN_WARNING_MISSED_CHECKINS,
   effectiveWarningThreshold,
+  ticksBeforeFire,
+  warningPossible,
   warningAction,
   pingAction,
 };

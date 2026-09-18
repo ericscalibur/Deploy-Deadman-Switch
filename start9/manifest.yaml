@@ -1,7 +1,14 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.9
+version: 2.1.10
 release-notes: |
+  - Fix: the advance warning to beneficiaries could go out together with
+    the very first check-in email, before the operator had any chance to
+    respond (daily check-ins with a two-day deadline). A "missed" check-in
+    now means an email that went a full check-in period unanswered; the
+    warning is never sent before that. When the periods leave no room for a
+    warning at all (inactivity not more than twice the check-in interval),
+    deploying says so.
   - Fix: the pre-fire warning to beneficiaries could never be sent when the
     inactivity period held fewer than five check-in intervals (for example
     weekly check-ins with a one-month deadline). The switch fired with no

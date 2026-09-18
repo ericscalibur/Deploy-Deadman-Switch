@@ -97,8 +97,12 @@ start9/                    # Packaging scripts for Start9 OS deployment
 - **Warning threshold is clamped to the deadline (v2.1.9)**:
   `effectiveWarningThreshold()` caps `WARNING_MISSED_CHECKINS` at the number
   of check-in ticks that fit inside the inactivity period (minus one for a
-  resend, never below 1). Without this a 1-week/1-month switch — or any
-  compressed test — fired with no warning at all because tick 5 never came.
+  resend). Never below 2 (v2.1.10): "missed" is counted at the tick that
+  SENDS a check-in email, so missed=1 means the first email just went out —
+  warning there told beneficiaries the operator had "stopped responding"
+  minutes after a routine check-in arrived (Dale, 1-day/2-day config). With
+  an inactivity period ≤ 2× the check-in interval no warning is possible;
+  `warningPossible()` makes `/activate` say so in its confirmation message.
 - **Interval validation must match the parsers (v2.1.9)**: `getIntervalMs`
   / `getInactivityMs` fall back to a default on out-of-range input instead
   of throwing. `validateTimeInterval` therefore enforces the same ceilings

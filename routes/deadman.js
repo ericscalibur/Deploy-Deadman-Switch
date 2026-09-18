@@ -14,6 +14,7 @@ const {
 } = require("../utils/timeUtils");
 const {
   effectiveWarningThreshold,
+  warningPossible,
   warningAction,
   pingAction,
   DEFAULT_WARNING_MISSED_CHECKINS,
@@ -1926,13 +1927,29 @@ router.post("/activate", authenticateToken, async (req, res) => {
       `⏳ PENDING: Switch deployed for ${userEmail} — awaiting first check-in to arm (email sent: ${armingEmailSent})`,
     );
 
+    // Tell the operator up front if these periods leave no room for the
+    // beneficiary pre-fire warning (needs the inactivity period to be more
+    // than twice the check-in interval), rather than letting them find out
+    // when the switch fires unannounced.
+    const warningWillFire = warningPossible({
+      threshold: WARNING_MISSED_CHECKINS,
+      checkinIntervalMs,
+      inactivityMs,
+    });
+    const warningNote = warningWillFire
+      ? ""
+      : " Note: with these periods no advance warning can be sent to your beneficiaries before the switch fires — that needs an inactivity period more than twice the check-in interval.";
+
     res.status(200).json({
       success: true,
       pending: true,
       armingEmailSent,
-      message: armingEmailSent
-        ? "Switch deployed and PENDING. A check-in email was just sent to you — click its link to arm the switch and start the countdown."
-        : "Switch deployed and PENDING, but the first check-in email could not be sent yet. The server will keep retrying; the countdown will not start until you complete a check-in.",
+      warningPossible: warningWillFire,
+      message:
+        (armingEmailSent
+          ? "Switch deployed and PENDING. A check-in email was just sent to you — click its link to arm the switch and start the countdown."
+          : "Switch deployed and PENDING, but the first check-in email could not be sent yet. The server will keep retrying; the countdown will not start until you complete a check-in.") +
+        warningNote,
       settings: {
         checkinIntervalMinutes: checkinIntervalMs / 1000 / 60,
         deadmanTimerMinutes: inactivityMs / 1000 / 60,

@@ -1,7 +1,9 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
+  MIN_WARNING_MISSED_CHECKINS,
   effectiveWarningThreshold,
+  warningPossible,
   warningAction,
   pingAction,
   DEFAULT_WARNING_MISSED_CHECKINS,
@@ -109,22 +111,40 @@ test("short inactivity periods clamp the threshold so a warning still fires", ()
   );
 });
 
-test("threshold never drops below one tick", () => {
+test("threshold never drops below two — the first check-in email is not a miss", () => {
+  assert.strictEqual(MIN_WARNING_MISSED_CHECKINS, 2);
+  // Dale's config: daily check-ins, 2-day deadline -> one tick before fire.
+  // Warning at tick 1 would go out with the very first check-in email.
   assert.strictEqual(
     effectiveWarningThreshold({
       threshold: DEFAULT_WARNING_MISSED_CHECKINS,
-      checkinIntervalMs: MIN,
-      inactivityMs: 2 * MIN,
+      checkinIntervalMs: DAY,
+      inactivityMs: 2 * DAY,
     }),
-    1,
+    2,
   );
   assert.strictEqual(
-    effectiveWarningThreshold({
-      threshold: DEFAULT_WARNING_MISSED_CHECKINS,
-      checkinIntervalMs: MIN,
-      inactivityMs: 90 * 1000,
-    }),
-    1,
+    warningPossible({ threshold: DEFAULT_WARNING_MISSED_CHECKINS, checkinIntervalMs: DAY, inactivityMs: 2 * DAY }),
+    false,
+  );
+  // 3-minute check-ins, 8-minute deadline: ticks at 3 and 6 -> warn at 6
+  assert.strictEqual(
+    effectiveWarningThreshold({ threshold: DEFAULT_WARNING_MISSED_CHECKINS, checkinIntervalMs: 3 * MIN, inactivityMs: 8 * MIN }),
+    2,
+  );
+  assert.strictEqual(
+    warningPossible({ threshold: DEFAULT_WARNING_MISSED_CHECKINS, checkinIntervalMs: 3 * MIN, inactivityMs: 8 * MIN }),
+    true,
+  );
+  // Exactly twice the interval: the only tick is the first email -> no warning
+  assert.strictEqual(
+    warningPossible({ threshold: DEFAULT_WARNING_MISSED_CHECKINS, checkinIntervalMs: MIN, inactivityMs: 2 * MIN }),
+    false,
+  );
+  // Just over twice: two ticks fit -> warning on the second
+  assert.strictEqual(
+    warningPossible({ threshold: DEFAULT_WARNING_MISSED_CHECKINS, checkinIntervalMs: MIN, inactivityMs: 2 * MIN + 1 }),
+    true,
   );
 });
 
