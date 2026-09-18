@@ -4,9 +4,9 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
 `CLAUDE.md`. Work in this order; each step leaves the suite green.
 
 ## 0. Setup
-- [ ] `npm install imapflow mailparser` (commit package-lock.json — the
+- [x] `npm install imapflow mailparser` (commit package-lock.json — the
       Docker build runs `npm ci`).
-- [ ] Bump version to 2.2.0 in `package.json`, `manifest.yaml`,
+- [x] Bump version to 2.2.0 in `package.json`, `manifest.yaml`,
       `start9/manifest.yaml` (release notes prepended, same style as 2.1.10).
 
 ## 1. Codes (`utils/codes.js` + `tests/codes.test.js`)

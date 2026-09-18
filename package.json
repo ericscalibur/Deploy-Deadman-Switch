@@ -1,6 +1,6 @@
 {
   "name": "deploy-deadman-switch",
-  "version": "2.1.10",
+  "version": "2.2.0",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "test": "node --test tests/*.test.js",
@@ -12,8 +12,10 @@
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "imapflow": "^2.0.5",
     "jpeg-js": "^0.4.4",
     "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.9.28",
     "nodemailer": "^7.0.3",
     "qrcode": "^1.5.4",
     "sqlite3": "^5.1.7",

@@ -1,7 +1,60 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.1.10
+version: 2.2.0
 release-notes: |
+  - (2.2.0) Check-ins and address confirmations are now done by replying to
+    the email with a short code, from any phone or computer. Every check-in
+    email, first-contact email, yearly address check and pre-fire warning
+    carries an 8-character code such as K7M4-P2XQ; replying with that code
+    is the whole interaction. The "I'm Active" button and every link back
+    to this server are gone from all emails. Before this, the link only
+    worked from wherever the server's address was reachable — the Tor
+    address on Start9, the local network on a laptop — so an operator away
+    from home, or a beneficiary anywhere, often had no way to click.
+  - Deploy now reads its own mailbox over IMAP to receive those replies.
+    With the Gmail provider the same app password is used (IMAP must be
+    enabled in Gmail settings); a custom SMTP provider gains IMAP host,
+    port, user and password fields. It reads only new mail addressed to
+    itself, acts only on messages carrying a code, and never moves or
+    deletes anything. Deploying a switch is refused until the IMAP login
+    has been verified, the same way it already was for SMTP.
+  - A code counts only when it appears outside quoted text, and never from
+    an automatic reply (out-of-office, helpdesk auto-acknowledgements,
+    bounces, mailing-list mail). A dead operator's vacation responder that
+    quotes the original email back cannot keep the switch alive.
+  - The code is the token: it is stored only as a hash, one live code per
+    email, retired the moment it is used or superseded. Five wrong guesses
+    against a code retire it and issue a fresh email. Codes therefore
+    survive a restart, so a reply arriving while the service is down is
+    processed once it is back.
+  - Replies receive one-line receipts: "Check-in received", "Confirmed —
+    thank you", "That code has expired — a fresh check-in email is on its
+    way", or "That code didn't match". A correct code sent from a different
+    address than the one Deploy wrote to is not accepted, and the original
+    address is told so — silence there would let the operator believe they
+    had checked in when they had not. Unrecognised mail gets no answer.
+  - Fail-safe: if Deploy cannot read its mailbox, a living operator cannot
+    check in remotely. While the inbound connection is down the missed
+    check-ins are still counted, but the pre-fire warning and the fire are
+    held, and the operator is emailed daily (and pushed via ntfy, if set)
+    to check in from the dashboard and fix the mail settings. The hold is
+    capped at 7 days. The dashboard shows a red banner. Every alert in
+    Deploy goes by email first; ntfy is never relied on.
+  - The dashboard's "Check in now" button is the operator's fallback when
+    email is broken, and the last check-in now says whether it came by
+    reply or from the dashboard. The dashboard shows whether email replies
+    are connected and when the mailbox was last checked.
+  - Each check-in email has a distinct subject with the date, so mail
+    clients do not stack several codes into one conversation.
+  - On first start after upgrading, every armed switch receives a fresh
+    check-in email carrying a code, and every address check that was sent
+    but never confirmed is re-sent with a code — its old link would
+    otherwise have aged into a false "address may be dead" alert. An armed
+    switch is never torn down by the upgrade: with no working IMAP it keeps
+    running, the dashboard goes red and the alert email goes out.
+  - The Service URL setting now only says where the dashboard lives;
+    emails no longer contain links, so http://localhost:3000 is fine for a
+    laptop install.
   - Fix: the advance warning to beneficiaries could go out together with
     the very first check-in email, before the operator had any chance to
     respond (daily check-ins with a two-day deadline). A "missed" check-in
