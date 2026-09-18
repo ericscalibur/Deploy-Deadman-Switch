@@ -83,3 +83,4 @@ qr-test.png
 # Claude Code local settings and session scratch output
 .claude/settings.local.json
 Claude outputs/
+.audit-sync.b64
