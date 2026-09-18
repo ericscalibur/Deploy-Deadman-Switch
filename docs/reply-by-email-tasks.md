@@ -36,18 +36,18 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       delete account) alongside beneficiary_pings.
 
 ## 3. Email content (`utils/emailService.js`)
-- [ ] `sendCheckinEmail(userEmail, code, missedCheckins, {arming})`: subject
+- [x] `sendCheckinEmail(userEmail, code, missedCheckins, {arming})`: subject
       `Deploy check-in — <D Mon YYYY>` (arming: `Confirm your first
       check-in to arm your Deploy switch — <date>`); body per spec UX;
       code in plain text AND html, monospace, large; NO button, NO URL.
       Set `Reply-To` to the routine address explicitly.
-- [ ] `buildBeneficiaryPingContent(operatorEmail, code, firstContact)` and
+- [x] `buildBeneficiaryPingContent(operatorEmail, code, firstContact)` and
       `sendBeneficiaryWarning(addr, operator, days, code, isResend)`: code
       instead of ackUrl; delete `torNotice()` and every `${APP_URL}` use.
-- [ ] `GET /deadman/contact-template` passes the inert code `EXAM-PLE1`.
-- [ ] New: `sendReceipt(to, subject, text)` (plain, one line), and
+- [x] `GET /deadman/contact-template` passes the inert code `EXAM-PLE1`.
+- [x] New: `sendReceipt(to, subject, text)` (plain, one line), and
       `sendInboundDownAlert(operatorEmail, downSince)`.
-- [ ] Nothing in `sendDeadmanEmails` (CRITICAL) changes.
+- [x] Nothing in `sendDeadmanEmails` (CRITICAL) changes.
 
 ## 4. Inbound parser (`utils/inboundParser.js` + `tests/inboundParser.test.js`)
 - [ ] `isAutoReply(headers)`: `Auto-Submitted` ≠ `no`, `X-Autoreply`,

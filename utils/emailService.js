@@ -13,31 +13,48 @@ const NTFY_REPEAT_MS = 60 * 60 * 1000;
 // all; URGENT marks the beneficiary pre-fire warning; CRITICAL is reserved
 // for the trigger itself; WARNING marks operator-side operational alerts.
 
-// Beneficiary-facing links point back at the operator's own server, which is
-// normally a Tor onion address. Chrome/Safari cannot resolve .onion at all and
-// report it as an ordinary dead page — so a beneficiary who is never told this
-// reads a working ack link as a broken one (or as phishing) and silently never
-// acknowledges. Say it explicitly, but only when the link actually needs Tor:
-// on a clearnet or LAN deployment these instructions would be noise.
-function torNotice(url) {
-  if (!/\.onion(?::\d+)?(?:\/|$)/i.test(String(url || ""))) {
-    return { html: "", text: "" };
-  }
-  return {
-    html: `
-        <p style="border-left: 4px solid #7d4698; padding-left: 15px; margin: 20px 0;">
-          <strong>This link only opens in Tor Browser.</strong> It is a
-          <code>.onion</code> address. Ordinary browsers such as Chrome, Safari
-          or Firefox cannot reach it and will report the page as unavailable —
-          that does not mean the link is broken. Install Tor Browser (free,
-          takes a few minutes) from
-          <a href="https://www.torproject.org/download/">torproject.org/download</a>,
-          then paste the link above into it.
-        </p>`,
-    text: `
-This link only opens in Tor Browser. It is a .onion address. Ordinary browsers such as Chrome, Safari or Firefox cannot reach it and will report the page as unavailable — that does not mean the link is broken. Install Tor Browser (free, takes a few minutes) from https://www.torproject.org/download/ then paste the link above into it.
-`,
-  };
+// Reply-by-email (v2.2.0): no email Deploy sends carries a link back to
+// this server. Every actionable email carries a short code instead, and the
+// reader replies with it — from any phone or computer, no reachability
+// required. APP_URL is where the dashboard lives and nothing more.
+const { formatCode } = require("./codes");
+
+// "18 Sep 2026 14:02 UTC" — every check-in email gets a distinct subject so
+// Gmail does not stack them into one conversation showing several codes.
+function dateStamp(d = new Date()) {
+  const day = d.getUTCDate();
+  const mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()];
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${mon} ${d.getUTCFullYear()} ${hh}:${mm} UTC`;
+}
+
+// The code, large and monospace, in both parts. Plain text gets it on a line
+// of its own so a phone's "copy" picks up exactly the code.
+// A real code is formatted XXXX-XXXX; the inert template code EXAM-PLE1 is
+// shown exactly as given (it is outside the code alphabet on purpose).
+function displayCode(code) {
+  const s = String(code || "").toUpperCase();
+  return /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(s) ? s : formatCode(s);
+}
+function codeBlockHtml(code) {
+  return `<p style="font-family: Menlo, Consolas, monospace; font-size: 28px; letter-spacing: 3px; margin: 18px 0; padding: 12px 16px; background: #f4f4f4; border-radius: 6px; display: inline-block;">${displayCode(code)}</p>`;
+}
+function codeBlockText(code) {
+  return `\n    ${displayCode(code)}\n`;
+}
+
+// Headers on every message Deploy sends. X-Deploy-Deadman lets the inbound
+// poller recognise Deploy's own mail when it shares the operator's mailbox
+// (a check-in email in the same INBOX would otherwise read as a reply
+// carrying its own code — a switch that checks itself in forever).
+// Auto-Submitted (RFC 3834) tells vacation responders not to answer routine
+// mail, which is how auto-reply loops are prevented on the sending side.
+function stampHeaders(mailOptions, { routine = true } = {}) {
+  const headers = Object.assign({}, mailOptions.headers || {});
+  headers["X-Deploy-Deadman"] = "1";
+  if (routine) headers["Auto-Submitted"] = "auto-generated";
+  return Object.assign({}, mailOptions, { headers });
 }
 
 // Email service for sending check-in and deadman emails
@@ -269,7 +286,8 @@ class EmailService {
   }
 
   // Send via primary, retry once with backup on failure
-  async _sendWithFallback(mailOptions) {
+  async _sendWithFallback(mailOptions, { routine = true } = {}) {
+    mailOptions = stampHeaders(mailOptions, { routine });
     try {
       const info = await this.transporter.sendMail(mailOptions);
       return { success: true, info, usedBackup: false };
@@ -298,7 +316,9 @@ class EmailService {
   async _sendTrigger(mailOptions) {
     if (this.triggerTransporter) {
       try {
-        const info = await this.triggerTransporter.sendMail(mailOptions);
+        const info = await this.triggerTransporter.sendMail(
+          stampHeaders(mailOptions, { routine: false }),
+        );
         return { success: true, info, usedBackup: false };
       } catch (triggerError) {
         console.error(
@@ -307,7 +327,7 @@ class EmailService {
         );
       }
     }
-    return this._sendWithFallback(mailOptions);
+    return this._sendWithFallback(mailOptions, { routine: false });
   }
 
   // A failed check-in email is the false-fire failure mode: the operator
@@ -323,130 +343,125 @@ class EmailService {
     );
   }
 
-  async sendCheckinEmail(userEmail, checkinToken, missedCheckins = 0) {
+  // The check-in email. Carries a code; the operator replies with it. Also
+  // the arming email ({arming: true}) — the first check-in of a deployed
+  // switch, which proves the whole round trip (Deploy can send, the
+  // operator receives, Deploy can read the answer) before anything counts
+  // down — and its reminders ({arming: true, reminder: true}).
+  //
+  // No button, no URL. Reply-To is set explicitly to the routine address so
+  // the reply lands where the inbound poller reads, whatever the client's
+  // idea of the sender is.
+  async sendCheckinEmail(
+    userEmail,
+    code,
+    missedCheckins = 0,
+    { arming = false, reminder = false } = {},
+  ) {
     if (!(await this.ensureReady())) {
       console.error(
-        `❌ Email service not initialized — check-in email to ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
+        `❌ Email service not initialized — ${arming ? "arming " : ""}check-in email to ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
       );
       this._alertCheckinSendFailure(userEmail, "email service not initialized");
       return false;
     }
 
     try {
-      const checkinUrl = `${process.env.APP_URL || "http://localhost:3000"}/deadman/checkin/${checkinToken}`;
-      console.log(`📧 Sending check-in email to ${userEmail}`);
+      console.log(`📧 Sending ${arming ? "arming " : ""}check-in email to ${userEmail}`);
+      const stamp = dateStamp();
 
-      // missedCheckins counts consecutive intervals of silence including the
-      // one that just elapsed; earlier *emails* left unanswered is one less.
-      const unanswered = Math.max(0, missedCheckins - 1);
-      const subject =
-        unanswered === 0
-          ? "Deploy check-in required"
-          : `URGENT: Deploy check-in overdue — ${unanswered} unanswered`;
-      const overdueHtml =
-        unanswered === 0
-          ? ""
-          : `<p><strong>You have not responded to ${unanswered} previous check-in ${unanswered === 1 ? "email" : "emails"}.</strong>
+      let subject;
+      let heading;
+      let leadHtml;
+      let leadText;
+      if (arming) {
+        subject = reminder
+          ? `URGENT: Deploy switch is still NOT armed — confirm your first check-in — ${stamp}`
+          : `Confirm your first check-in to arm your Deploy switch — ${stamp}`;
+        heading = "Your switch is pending — not armed yet";
+        leadHtml = `
+          <p>You deployed your Deploy Deadman Switch, but the countdown has
+          <strong>not started</strong>. It starts only when you complete this
+          first check-in, which proves the whole loop works: this email reached
+          you, your reply reached Deploy, and Deploy could read it.</p>
+          <p><strong>To arm the switch, reply to this email with this code:</strong></p>`;
+        leadText = `You deployed your Deploy Deadman Switch, but the countdown has NOT started. It starts only when you complete this first check-in, which proves the whole loop works: this email reached you, your reply reached Deploy, and Deploy could read it.
+
+To arm the switch, reply to this email with this code:`;
+      } else {
+        // missedCheckins counts consecutive intervals of silence including
+        // the one that just elapsed; earlier *emails* left unanswered is one
+        // less.
+        const unanswered = Math.max(0, missedCheckins - 1);
+        subject =
+          unanswered === 0
+            ? `Deploy check-in — ${stamp}`
+            : `URGENT: Deploy check-in overdue — ${unanswered} unanswered — ${stamp}`;
+        heading = "Check-in required";
+        const overdueHtml =
+          unanswered === 0
+            ? ""
+            : `<p><strong>You have not responded to ${unanswered} previous check-in ${unanswered === 1 ? "email" : "emails"}.</strong>
              If you keep missing check-ins, your recipients will first receive a
              pre-fire warning, and eventually the switch will fire. If you are
              seeing this and you are fine, check in now.</p>`;
-      const overdueText =
-        unanswered === 0
-          ? ""
-          : `\nYou have not responded to ${unanswered} previous check-in email(s). If you keep missing check-ins, your recipients will first receive a pre-fire warning, and eventually the switch will fire.\n`;
+        const overdueText =
+          unanswered === 0
+            ? ""
+            : `You have not responded to ${unanswered} previous check-in email(s). If you keep missing check-ins, your recipients will first receive a pre-fire warning, and eventually the switch will fire.
+
+`;
+        leadHtml = `
+          <p>This is your scheduled check-in from Deploy Deadman Switch.</p>
+          ${overdueHtml}
+          <p><strong>To confirm you are alive, reply to this email with this code:</strong></p>`;
+        leadText = `This is your scheduled check-in from Deploy Deadman Switch.
+
+${overdueText}To confirm you are alive, reply to this email with this code:`;
+      }
+
+      const tailHtml = arming
+        ? `<p>Nothing else is needed. The reply can come from any phone or computer.</p>
+          <hr>
+          <p><small>Until you reply, no timers run and nothing will ever be
+          sent to your recipients. You will be reminded until the switch is
+          armed. If replying does not work, log in to your Deploy dashboard
+          and use <em>Check in now</em>.</small></p>`
+        : `<p>Nothing else is needed. The reply can come from any phone or computer.</p>
+          <hr>
+          <p><small>If you don't respond to check-ins, your deadman switch will
+          activate and send your configured emails. If replying does not
+          work, log in to your Deploy dashboard and use <em>Check in
+          now</em>.</small></p>`;
+      const tailText = arming
+        ? `Nothing else is needed. The reply can come from any phone or computer.
+
+Until you reply, no timers run and nothing will ever be sent to your recipients. You will be reminded until the switch is armed. If replying does not work, log in to your Deploy dashboard and use "Check in now".`
+        : `Nothing else is needed. The reply can come from any phone or computer.
+
+If you don't respond to check-ins, your deadman switch will activate and send your configured emails. If replying does not work, log in to your Deploy dashboard and use "Check in now".`;
 
       const mailOptions = {
         from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+        replyTo: this._routineFromAddress(),
         to: userEmail,
         subject,
         html: `
-          <h2>Check-In Required</h2>
+          <h2>${heading}</h2>
           <p>Hello,</p>
-          <p>This is your scheduled check-in from Deploy Deadman Switch service.</p>
-          ${overdueHtml}
-          <p><strong>Click the link below to confirm you're active:</strong></p>
-          <p><a href="${checkinUrl}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">I'm Active - Reset Timer</a></p>
-          <p>Or copy and paste this URL into your browser:</p>
-          <p><code>${checkinUrl}</code></p>
-          <hr>
-          <p><small>If you don't respond to check-ins, your deadman switch will activate and send your configured emails.</small></p>
+          ${leadHtml}
+          ${codeBlockHtml(code)}
+          ${tailHtml}
           <p><small>This is an automated message from Deploy Deadman Switch.</small></p>
         `,
         text: `
-Check-In Required
+${heading}
 
 Hello,
 
-This is your scheduled check-in from Deploy Deadman Switch service.
-${overdueText}
-Click the link below to confirm you're active:
-${checkinUrl}
-
-If you don't respond to check-ins, your deadman switch will activate and send your configured emails.
-
-This is an automated message from Deploy Deadman Switch.
-        `,
-      };
-
-      const { info } = await this._sendWithFallback(mailOptions);
-      console.log(`✅ Check-in email sent successfully to ${userEmail}`, info.messageId);
-      clearThrottle(`checkin-send-failed:${userEmail}`);
-      return true;
-    } catch (error) {
-      console.error(`❌ Failed to send check-in email to ${userEmail}:`, error);
-      this._alertCheckinSendFailure(userEmail, error.message);
-      return false;
-    }
-  }
-
-  // First check-in email of an armed-but-pending switch (and its reminders).
-  // The switch holds in pending until this link is clicked: completing the
-  // check-in proves the whole loop — email arrives, link opens, server
-  // reachable, token accepted — before anything is allowed to count down.
-  async sendArmingCheckinEmail(userEmail, checkinToken, isReminder = false) {
-    if (!(await this.ensureReady())) {
-      console.error(
-        `❌ Email service not initialized — arming check-in email to ${userEmail} NOT sent.`,
-      );
-      this._alertCheckinSendFailure(userEmail, "email service not initialized");
-      return false;
-    }
-
-    try {
-      const checkinUrl = `${process.env.APP_URL || "http://localhost:3000"}/deadman/checkin/${checkinToken}`;
-      const subject = isReminder
-        ? "URGENT: Deploy switch is still NOT armed — confirm your first check-in"
-        : "Confirm your first check-in to arm your Deploy switch";
-
-      const mailOptions = {
-        from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
-        to: userEmail,
-        subject,
-        html: `
-          <h2>Your switch is pending — not armed yet</h2>
-          <p>You just deployed your Deploy Deadman Switch, but the countdown
-          has <strong>not started</strong>. It starts only when you complete
-          this first check-in, which proves the whole loop works: this email
-          reached you, the link opens, and your check-in registers.</p>
-          <p><strong>Click the link below to arm the switch:</strong></p>
-          <p><a href="${checkinUrl}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Arm My Switch - Start Countdown</a></p>
-          <p>Or copy and paste this URL into your browser:</p>
-          <p><code>${checkinUrl}</code></p>
-          <hr>
-          <p><small>Until you click, no timers run and nothing will ever be
-          sent to your recipients. You will be reminded until the switch is
-          armed.</small></p>
-          <p><small>This is an automated message from Deploy Deadman Switch.</small></p>
-        `,
-        text: `
-Your switch is pending — not armed yet
-
-You just deployed your Deploy Deadman Switch, but the countdown has NOT started. It starts only when you complete this first check-in, which proves the whole loop works: this email reached you, the link opens, and your check-in registers.
-
-Click the link below to arm the switch:
-${checkinUrl}
-
-Until you click, no timers run and nothing will ever be sent to your recipients. You will be reminded until the switch is armed.
+${leadText}
+${codeBlockText(code)}
+${tailText}
 
 This is an automated message from Deploy Deadman Switch.
         `,
@@ -454,16 +469,13 @@ This is an automated message from Deploy Deadman Switch.
 
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(
-        `✅ Arming check-in email ${isReminder ? "(reminder) " : ""}sent to ${userEmail}`,
+        `✅ ${arming ? `Arming check-in email ${reminder ? "(reminder) " : ""}` : "Check-in email "}sent to ${userEmail}`,
         info.messageId,
       );
       clearThrottle(`checkin-send-failed:${userEmail}`);
       return true;
     } catch (error) {
-      console.error(
-        `❌ Failed to send arming check-in email to ${userEmail}:`,
-        error,
-      );
+      console.error(`❌ Failed to send check-in email to ${userEmail}:`, error);
       this._alertCheckinSendFailure(userEmail, error.message);
       return false;
     }
@@ -712,7 +724,7 @@ Print or save this entire email — it contains the encrypted payload needed for
     recipientEmail,
     operatorEmail,
     daysRemaining,
-    ackUrl,
+    code,
     isResend = false,
   ) {
     if (!(await this.ensureReady())) {
@@ -725,10 +737,9 @@ Print or save this entire email — it contains the encrypted payload needed for
     const daysText =
       daysRemaining > 0 ? `approximately ${daysRemaining} days` : "very soon";
 
-    const tor = torNotice(ackUrl);
-
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+      replyTo: this._routineFromAddress(),
       to: recipientEmail,
       subject: `URGENT: ${operatorEmail} has stopped responding — action needed${isResend ? " (reminder)" : ""}`,
       html: `
@@ -746,10 +757,12 @@ Print or save this entire email — it contains the encrypted payload needed for
           phone, family, mutual friends, visiting in person. They may simply have
           lost access to this email account. If you reach them, tell them to check
           in with their Deploy system immediately.</li>
-          <li><strong>Confirm you received this warning</strong> by clicking:
-          <a href="${ackUrl}">${ackUrl}</a> — this only confirms this address works;
-          it does not trigger or stop anything.</li>
-        </ol>${tor.html}
+          <li><strong>Confirm you received this warning by replying to this email
+          with this code:</strong>
+          ${codeBlockHtml(code)}
+          This only confirms this address works; it does not trigger or stop
+          anything.</li>
+        </ol>
         <p>This warning contains no sensitive information. If the final message is
         sent later, it will arrive from a different sender address and will be
         marked CRITICAL.</p>
@@ -766,10 +779,10 @@ What you should do now:
 
 1. Try to reach ${operatorEmail} by every means you have — phone, family, mutual friends, visiting in person. They may simply have lost access to this email account. If you reach them, tell them to check in with their Deploy system immediately.
 
-2. Confirm you received this warning by opening this link:
-${ackUrl}
+2. Confirm you received this warning by replying to this email with this code:
+${codeBlockText(code)}
 This only confirms this address works; it does not trigger or stop anything.
-${tor.text}
+
 This warning contains no sensitive information. If the final message is sent later, it will arrive from a different sender address and will be marked CRITICAL.
 
 Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
@@ -806,7 +819,10 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
   // both the sender and the preview endpoint. A hand-maintained copy in the
   // UI would drift the moment this wording changed — and it is the copy the
   // operator trusts when making that decision.
-  buildBeneficiaryPingContent(operatorEmail, ackUrl, firstContact = false) {
+  // `code` is the reply code the beneficiary answers with. The message
+  // editor's preview passes the inert EXAM-PLE1 (it contains symbols outside
+  // the code alphabet, so it can never be mistaken for a live code).
+  buildBeneficiaryPingContent(operatorEmail, code, firstContact = false) {
     const esc = (v) =>
       String(v)
         .replace(/&/g, "&amp;")
@@ -814,12 +830,13 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
     const op = esc(operatorEmail);
-    const url = esc(ackUrl);
-    const tor = torNotice(ackUrl);
 
     const subject = firstContact
-      ? `${operatorEmail} listed you as a trusted contact — one click required`
-      : `Annual contact check for ${operatorEmail} — one click required`;
+      ? `${operatorEmail} listed you as a trusted contact — one reply required`
+      : `Annual contact check for ${operatorEmail} — one reply required`;
+
+    const codeHtml = codeBlockHtml(code);
+    const codeText = codeBlockText(code);
 
     const introHtml = firstContact
       ? `<p><strong>${op}</strong> has set up an automated notification
@@ -827,35 +844,39 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
         unreachable for a long period, this system will send you important
         information they prepared. Nothing is wrong and nothing is being sent
         to you now.</p>
-        <p>To confirm the line of communication works, <strong>please click:</strong><br>
-        <a href="${url}">${url}</a></p>`
+        <p><strong>To confirm this address works, reply to this email with this code:</strong></p>
+        ${codeHtml}
+        <p>Nothing else is needed. The reply can come from any phone or computer.</p>`
       : `<p>This is the once-a-year address verification from the automated
         notification system that <strong>${op}</strong> set up with you
         in mind. Nothing is wrong and nothing is being sent to you.</p>
-        <p><strong>Please confirm this address still works by clicking:</strong><br>
-        <a href="${url}">${url}</a></p>`;
+        <p><strong>To confirm this address still works, reply to this email with this code:</strong></p>
+        ${codeHtml}
+        <p>Nothing else is needed. The reply can come from any phone or computer.</p>`;
 
     const introText = firstContact
       ? `${operatorEmail} has set up an automated notification system and listed this address as a trusted contact. If they ever become unreachable for a long period, this system will send you important information they prepared. Nothing is wrong and nothing is being sent to you now.
 
-To confirm the line of communication works, please open this link:
-${ackUrl}`
+To confirm this address works, reply to this email with this code:
+${codeText}
+Nothing else is needed. The reply can come from any phone or computer.`
       : `This is the once-a-year address verification from the automated notification system that ${operatorEmail} set up with you in mind. Nothing is wrong and nothing is being sent to you.
 
-Please confirm this address still works by opening this link:
-${ackUrl}`;
+To confirm this address still works, reply to this email with this code:
+${codeText}
+Nothing else is needed. The reply can come from any phone or computer.`;
 
     return {
       subject,
       html: `
-        ${introHtml}${tor.html}
+        ${introHtml}
         <p>If you don't confirm within 30 days, ${op} will be alerted
         that this address may no longer be in use.</p>
         <p><small>Automated message from Deploy Deadman Switch on behalf of ${op}. After this, expect exactly one verification per year.</small></p>
       `,
       text: `
 ${introText}
-${tor.text}
+
 If you don't confirm within 30 days, ${operatorEmail} will be alerted that this address may no longer be in use.
 
 Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. After this, expect exactly one verification per year.
@@ -866,7 +887,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
   async sendBeneficiaryPing(
     recipientEmail,
     operatorEmail,
-    ackUrl,
+    code,
     firstContact = false,
   ) {
     if (!(await this.ensureReady())) {
@@ -878,12 +899,13 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
 
     const { subject, html, text } = this.buildBeneficiaryPingContent(
       operatorEmail,
-      ackUrl,
+      code,
       firstContact,
     );
 
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+      replyTo: this._routineFromAddress(),
       to: recipientEmail,
       subject,
       html,
@@ -906,7 +928,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
     }
   }
 
-  // The beneficiary clicked the ack link — tell the operator the line of
+  // The beneficiary answered with their code — tell the operator the line of
   // communication is confirmed open. For privacy the address is not named
   // (the dashboard's per-recipient "Last contact" line shows which).
   async sendPingConfirmedNotice(operatorEmail, firstContact) {
@@ -997,6 +1019,105 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
       );
       return false;
     }
+  }
+
+  // One-line receipt answering a reply. Threaded onto the reader's message
+  // when its Message-ID is known so it lands under their own reply. Never
+  // sent to unrecognised mail — see handleInbound; that is how auto-reply
+  // loops start.
+  async sendReceipt(to, subject, text, { inReplyTo = null, references = null } = {}) {
+    if (!(await this.ensureReady())) {
+      console.error(`❌ Email service not initialized — receipt to ${to} NOT sent.`);
+      return false;
+    }
+    const esc = (v) =>
+      String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const mailOptions = {
+      from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
+      replyTo: this._routineFromAddress(),
+      to,
+      subject,
+      text: `${text}\n`,
+      html: `<p>${esc(text)}</p>`,
+    };
+    if (inReplyTo) {
+      mailOptions.inReplyTo = inReplyTo;
+      mailOptions.references = references || inReplyTo;
+    }
+    try {
+      const { info } = await this._sendWithFallback(mailOptions);
+      console.log(`✅ Receipt sent to ${to}: ${subject}`, info.messageId);
+      return true;
+    } catch (error) {
+      console.error(`❌ Failed to send receipt to ${to}:`, error);
+      return false;
+    }
+  }
+
+  // Deploy cannot read its own mailbox, so a reply from this operator would
+  // go unseen. Email FIRST — an IMAP failure rarely coincides with an SMTP
+  // failure — and ntfy only in addition (the caller does that). Repeated
+  // daily by the caller while the condition persists.
+  //   notConfigured: no IMAP settings at all (custom SMTP without IMAP)
+  //   capExpired:    the 7-day fail-safe hold has run out; normal timing
+  //                  has resumed and the switch can now fire on schedule
+  async sendInboundDownAlert(
+    operatorEmail,
+    downSince,
+    { notConfigured = false, capExpired = false, error = null } = {},
+  ) {
+    const since =
+      downSince instanceof Date
+        ? downSince
+        : downSince
+          ? new Date(downSince)
+          : null;
+    const sinceText =
+      since && !isNaN(since.getTime()) ? `since ${dateStamp(since)}` : "";
+    const whyHtml = notConfigured
+      ? `<p>No IMAP (incoming mail) settings are configured, so Deploy has no
+         way to read the replies to its check-in emails.</p>`
+      : `<p>Deploy has not been able to read its mailbox ${sinceText}${error ? ` (last error: <code>${String(error).replace(/</g, "&lt;")}</code>)` : ""}.</p>`;
+    const whyText = notConfigured
+      ? `No IMAP (incoming mail) settings are configured, so Deploy has no way to read the replies to its check-in emails.`
+      : `Deploy has not been able to read its mailbox ${sinceText}${error ? ` (last error: ${error})` : ""}.`;
+    const holdHtml = notConfigured
+      ? `<p>Your switch keeps running on its normal schedule. Until this is
+         fixed, the dashboard is the only way to check in.</p>`
+      : capExpired
+        ? `<p><strong>The 7-day safety hold has run out.</strong> The switch has
+           resumed its normal timing: if you do not check in, the warning and
+           the trigger will now go out on schedule.</p>`
+        : `<p>As a safety measure, the pre-fire warning and the trigger are
+           <strong>held</strong> while this lasts (for at most 7 days), so the
+           switch cannot fire on a reply it could not read. Missed check-ins
+           are still being counted.</p>`;
+    const holdText = notConfigured
+      ? `Your switch keeps running on its normal schedule. Until this is fixed, the dashboard is the only way to check in.`
+      : capExpired
+        ? `THE 7-DAY SAFETY HOLD HAS RUN OUT. The switch has resumed its normal timing: if you do not check in, the warning and the trigger will now go out on schedule.`
+        : `As a safety measure, the pre-fire warning and the trigger are HELD while this lasts (for at most 7 days), so the switch cannot fire on a reply it could not read. Missed check-ins are still being counted.`;
+
+    return this.sendAlertEmail(
+      operatorEmail,
+      `WARNING: your Deploy replies are not being received — ${dateStamp()}`,
+      `<h2>Your check-in replies are not being received</h2>
+       ${whyHtml}
+       <p><strong>Check in from the dashboard ("Check in now") and fix the
+       mail settings.</strong> Replying to check-in emails will not work until
+       this is resolved.</p>
+       ${holdHtml}
+       <p><small>This alert repeats daily while the problem persists. Automated message from Deploy Deadman Switch.</small></p>`,
+      `Your check-in replies are not being received
+
+${whyText}
+
+CHECK IN FROM THE DASHBOARD ("Check in now") AND FIX THE MAIL SETTINGS. Replying to check-in emails will not work until this is resolved.
+
+${holdText}
+
+This alert repeats daily while the problem persists. Automated message from Deploy Deadman Switch.`,
+    );
   }
 
   async testEmailConnection() {

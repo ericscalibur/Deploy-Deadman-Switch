@@ -1469,14 +1469,15 @@ router.get("/emails", authenticateToken, async (req, res) => {
 // Rendered from the same builder the sender uses, so the preview cannot
 // drift from the real thing.
 //
-// The ack URL here is illustrative. Minting a real token for a preview would
-// create a live one-click confirmation that nobody was ever sent, quietly
-// marking an address verified that was never contacted.
+// The code here is inert: EXAM-PLE1 uses symbols outside the code alphabet
+// (L, 1), so it can never match a live code. Minting a real one for a
+// preview would create a live confirmation that nobody was ever sent,
+// quietly marking an address verified that was never contacted.
 router.get("/contact-template", authenticateToken, (req, res) => {
   try {
     const { subject, html } = emailService.buildBeneficiaryPingContent(
       req.user.email,
-      `${appUrl()}/deadman/ack/EXAMPLE-LINK-NOT-ACTIVE`,
+      "EXAM-PLE1",
       true,
     );
     res.json({ success: true, subject, html });
