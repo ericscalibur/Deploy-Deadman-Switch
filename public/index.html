@@ -54,16 +54,19 @@
             <p>
                 &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
                 service. Here’s how it works. You will receive a Check-In at
-                regular Intervals. When you receive the email, open it and click
-                the link to log your activity — clicking that link is the only
-                thing that resets the timer. If the Period of Inactivity elapses
-                without a check-in, the Deadman Switch will activate and your
-                emails will be sent. All your data is encrypted until the final
-                emails are sent. You can send up to 20 emails.
+                regular Intervals. When you receive the email, reply to it with
+                the short code it contains — that reply, from any phone or
+                computer, is what resets the timer. Emails contain no links.
+                If replying ever stops working, the <em>Check in now</em>
+                button on this page is your fallback. If the Period of
+                Inactivity elapses without a check-in, the Deadman Switch will
+                activate and your emails will be sent. All your data is
+                encrypted until the final emails are sent. You can send up to
+                20 emails.
                 <br /><br />
                 &nbsp;&nbsp;&nbsp;&nbsp;Deploy also asks each recipient to
-                confirm their address with a one-click link — their click is the
-                only real proof the address still reaches them. It is on by
+                confirm their address by replying with a code — their reply is
+                the only real proof the address still reaches them. It is on by
                 default and we recommend leaving it that way; with it off, an
                 address that has quietly died is never discovered. You can turn
                 it off for any individual recipient when you edit their message,
@@ -183,6 +186,18 @@
                         Last activity:
                         <span id="last-activity">Not recorded</span>
                     </small>
+                </div>
+
+                <!-- Whether Deploy can read the replies to its own emails.
+                     Red when it cannot: remote check-ins are then NOT
+                     working and the button below is the only path. -->
+                <div id="inbound-status" class="inbound-status" style="display: none"></div>
+
+                <!-- The operator's fallback when email is broken, reachable
+                     at home (LAN / onion). Shown only while a switch exists. -->
+                <div class="checkin-now-container" id="checkin-now-container" style="display: none">
+                    <button id="checkin-now-button" type="button">Check in now</button>
+                    <small id="checkin-now-hint">Use this if replying to the check-in email is not possible.</small>
                 </div>
             </div>
 
