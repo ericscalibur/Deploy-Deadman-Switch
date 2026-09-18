@@ -166,17 +166,17 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       whose operator has no working IMAP beyond the red banner + alert.
 
 ## 11. Verification (all must pass before tag)
-- [ ] `npm test` green.
-- [ ] Sandbox E2E with `DEPLOY_TEST_HOOKS=1`, 1-min/5-min: deploy → inject
+- [x] `npm test` green.
+- [x] Sandbox E2E with `DEPLOY_TEST_HOOKS=1`, 1-min/5-min: deploy → inject
       arming reply → armed → first contact (code) → inject ben ack → inject
       check-in reply → silent → warning at missed=3 → CRITICAL. Assert no
       `http` link in any operator/beneficiary email except CRITICAL's
       external tool links.
-- [ ] Inject: wrong code ×5 → reissue; old code → "expired" receipt +
+- [x] Inject: wrong code ×5 → reissue; old code → "expired" receipt +
       fresh email; vacation reply (Auto-Submitted) with code only inside
       quote → ignored; reply from other address → receipt to original.
-- [ ] Restart mid-cycle; inject a reply after restart → processed once.
-- [ ] Fail-safe: simulate down_since across a warning tick → held + alert
+- [x] Restart mid-cycle; inject a reply after restart → processed once.
+- [x] Fail-safe: simulate down_since across a warning tick → held + alert
       email; clear → resumes.
 - [ ] Live: real Gmail, phone off the LAN, Gmail app + Apple Mail +
       Outlook mobile, one arming and one check-in each.
