@@ -1,6 +1,6 @@
-# Reply-by-email check-ins and acknowledgements — specification
+# Check-in and acknowledgement by email reply — specification
 
-Status: proposed (2026-09-18). Target: v2.2.0.
+Status: proposed (2026-09-18), revised same day after review. Target: v2.2.0.
 
 ## Problem
 
@@ -16,166 +16,201 @@ inline, decryption tools external — and needs no reachability. The gap is
 proof of life from the operator, and address acknowledgement from
 beneficiaries.
 
-## Principle
+## Decision
 
 Email is the one channel Deploy already requires and that works from
-everywhere, in both directions. Make it sufficient on its own: every
-actionable email can be answered by **replying to it**. Links remain as the
-fast path where they work.
+everywhere, in both directions. Make it the **only** remote path:
 
-## Threat model — what must not change
+- Every actionable email carries a short **code**. The reader replies to
+  the email with that code. That is the whole interaction.
+- The "I'm Active" button, the check-in URL and the ack URL are removed
+  from all emails. `APP_URL` no longer appears in any email; it is only
+  where the dashboard lives.
+- The operator's fallback when email is broken is the dashboard's own
+  "Check in now" button, reachable at home (LAN / onion). Nothing else.
 
-Today: whoever can read the email can act on it (the token is the link).
-Reply-by-email must be no weaker than that, and specifically must not open
-a way for the switch to be kept alive by something other than a living
-operator:
+One path for remote users, one for the operator at home. No "or".
 
-1. **Auto-responders.** Vacation/out-of-office replies carry `In-Reply-To`
-   and come from the operator's address. Gmail re-sends its vacation reply
-   to the same sender every ~4 days; check-ins arrive every 1–4 weeks. A
-   dead operator's mailbox would answer every check-in indefinitely.
-   *Mitigation:* a reply counts only if it contains the required word
-   (`ALIVE` for check-ins, `CONFIRM` for acks) on a line of its own, AND
-   carries no auto-reply marker (`Auto-Submitted` other than `no`,
-   `X-Autoreply`, `X-Autorespond`, `X-Auto-Response-Suppress`,
-   `Precedence: bulk|auto_reply|junk`, `List-Id`). Both conditions.
-2. **Replay.** An old captured email must not work forever.
-   *Mitigation:* only the currently outstanding token is accepted, exactly
-   as with links. A reply to a stale email is answered with a fresh
-   check-in email (see UX) and is otherwise ignored.
-3. **Forgery.** Anyone can put the operator's address in `From`.
-   *Mitigation:* the token is the secret, as today. `From` must additionally
-   match the address the original was sent to (cheap filter against stray
-   forwards). DKIM verification is a later hardening, not a v1 requirement.
-4. **Bounces / delivery failures** (`mailer-daemon`, `Return-Path: <>`)
-   are never treated as replies. (Future: treat a bounce of a beneficiary
-   ping as evidence the address is dead — see "Later".)
-5. **Scope of mailbox access.** Deploy gains IMAP read on the sending
-   account. It reads only messages that reference its own Message-IDs or
-   subject tag; it never reads, moves or deletes anything else. Document
-   this plainly in the config UI.
+## The code
 
-## Matching a reply to a token — three keys, any one suffices
+- 8 characters from a 32-symbol alphabet with no look-alikes
+  (`23456789ABCDEFGHJKMNPQRSTVWXYZ` — no 0/O, 1/I/L): 40 bits.
+- Displayed as `K7M4-P2XQ`; accepted case-insensitively, hyphen optional,
+  surrounding whitespace ignored.
+- The code **is** the token. Stored only as `sha256(code)` with kind
+  (checkin / arming / ping-ack / warning-ack), operator id, recipient
+  address, created_at, used_at, failed_attempts. This absorbs the
+  "persist check-in tokens (hashed)" roadmap item; nothing lives in memory.
+- Exactly one live code per (operator, kind[, recipient]). Issuing a new
+  check-in email retires the previous code.
+- After 5 wrong codes against a live code, it is retired and a fresh
+  email is issued (limits brute force to 5 × 2^-40 per email).
 
-Outgoing actionable emails (check-in, arming check-in, first contact /
-annual ping, pre-fire warning) get:
+## Threat model — what must hold
 
-- `Message-ID: <dm-<kind>-<token>@deploy.local>` — replies carry it in
-  `In-Reply-To` / `References` (RFC 5322; preserved by every mainstream
-  client, independent of quoting).
-- Subject suffix ` [DM-<first 12 hex of token>]` — survives clients that
-  drop `References`; 48 bits is unguessable by mail.
-- The full URL already in the body — quoted by most clients; a body scan
-  for `/deadman/(checkin|ack)/<64 hex>` is the third key.
-- `Reply-To` set explicitly to the routine sending address.
+Today: whoever can read the email can act on it. Reply-with-code must be
+no weaker, and must not let anything other than a living human keep the
+switch alive:
 
-`parseInboundReply(raw) → { kind: "checkin"|"ack"|null, token|shortRef,
-from, word: "ALIVE"|"CONFIRM"|null, autoReply: bool, bounce: bool }` is a
-pure function with fixture tests (Gmail web, Gmail mobile, Outlook, Apple
-Mail, Thunderbird; top-posted, bottom-posted, quote-stripped; vacation
-reply; bounce; a forward; word missing; word inside quoted text only).
+1. **Auto-responders.** Vacation / out-of-office replies come from the
+   operator's address and, from some systems (helpdesks), quote the
+   original — code included. A dead operator's mailbox could answer every
+   check-in. *Mitigation:* the code counts only when found **outside
+   quoted material**, and any message carrying an auto-reply marker is
+   discarded outright (`Auto-Submitted` other than `no`, `X-Autoreply`,
+   `X-Autorespond`, `X-Auto-Response-Suppress`, `Precedence:
+   bulk|auto_reply|junk|list`, `List-Id`). Both conditions, always.
+2. **Replay.** Only the live code is accepted; a used or retired code is
+   answered with a fresh email and nothing else changes.
+3. **Forgery.** Anyone can put an address in `From`. The code is the
+   secret; `From` must additionally equal the address Deploy wrote to
+   (case-insensitive; filters stray forwards). DKIM verification of the
+   inbound message is a later hardening, not v1.
+4. **Bounces** (`mailer-daemon`, empty `Return-Path`) are never replies.
+5. **False fire.** If Deploy cannot read mail, a living operator cannot
+   check in remotely. *Mitigations:* IMAP is verified before a switch can
+   be deployed (as SMTP is today); the poller alerts via ntfy the moment
+   the connection fails and again daily while it stays down; the dashboard
+   check-in is unaffected. Deploy never fires on the strength of "no
+   reply" while it knows its own inbox is unreadable — see "Fail-safe".
+6. **Mailbox scope.** Deploy gains IMAP read on its sending account. It
+   searches only for unseen mail addressed to it, reads only messages
+   containing a code pattern, never moves or deletes anything. Stated in
+   the config UI.
 
-The required word must appear **outside** quoted material (lines not
-starting with `>` and above the first `On … wrote:` / `-----Original
-Message-----` marker) so the word in Deploy's own instructions never
-satisfies the check.
+## Quoted-text detection
+
+The parser works on the plain-text part when present, else HTML converted
+to text with `<blockquote>` and `.gmail_quote` / `#divRplyFwdMsg` /
+`.yahoo_quoted` subtrees removed first. Then, top-down, everything from
+the first quote marker onward is discarded:
+
+- a line beginning with `>`
+- `On … wrote:` (Gmail, Apple Mail; multi-line variants)
+- `-----Original Message-----` / `________________________________`
+  (Outlook)
+- `From: …` immediately followed by `Sent:`/`Date:` and `To:` lines
+- `Le … a écrit :`, `Am … schrieb …`, `El … escribió:` (localised
+  Gmail/Apple headers — the alphabet is fixed, the language is not)
+
+The code is searched only in what remains. Fixture tests cover Gmail web,
+Gmail iOS/Android, Outlook desktop/web/mobile, Apple Mail, Thunderbird,
+Proton web; top-posted, bottom-posted, inline, quote-stripped; a vacation
+reply; a helpdesk auto-ack that quotes the original; a forward; the code
+only inside the quote; the code with/without hyphen and in lower case.
+
+## Fail-safe
+
+`registerMissedCheckin()` gains one guard: if the inbound mail connection
+has been down continuously since before the last check-in email was sent,
+the miss is still counted (the operator has other duties) **but** the
+pre-fire warning and the fire are held while the outage persists, with an
+urgent ntfy alert every day. When the connection recovers, the backlog is
+processed before any timer decision. This trades a delayed fire for never
+firing on a living operator whose replies Deploy could not read. The hold
+is capped at 7 days, after which normal timing resumes and the alert says
+so — an outage that long is the operator's problem to have noticed.
 
 ## Processing
 
-Refactor the existing handlers so the route and the poller share one path:
+- `performCheckin(codeHash, { via })` — extracted from today's
+  `GET /checkin/:token` handler: pending→armed, `resetEscalationState`,
+  timer resets, first contact on arming, code retirement. The dashboard
+  button and the poller both call it. The HTTP route is removed.
+- `performAck(codeHash)` — extracted from `GET /ack/:token` (ping-ack and
+  warning-ack branches). Route removed.
 
-- `performCheckin(token, { via })` — extracted from `GET /checkin/:token`:
-  pending→armed transition, `resetEscalationState`, timer resets, first
-  contact on arming, used-token memory. Returns `{ ok, wasPending,
-  alreadyUsed, unknown }`. The route renders HTML from it; the poller
-  emails a receipt from it.
-- `performAck(token)` — extracted from `GET /ack/:token` (both the
-  beneficiary-ping and warning-ack branches).
-
-Poller (`utils/inboundMail.js`):
-
-- `imapflow` (nodemailer's sibling; IDLE + reconnect built in),
-  `mailparser` for RFC822 parsing.
-- Connect to the routine sending mailbox. Search
-  `UNSEEN HEADER In-Reply-To dm-` OR `UNSEEN SUBJECT "[DM-"`. IDLE when the
-  server supports it; poll every 60 s otherwise; full resync on reconnect.
-- Persist last processed UID (+ UIDVALIDITY) per mailbox in `settings` so
-  restarts neither miss nor reprocess. Additionally mark handled messages
-  with the `$DeployHandled` keyword when the server allows custom flags.
-- Per message: `parseInboundReply` → reject if bounce/auto-reply/no word
-  → resolve short-ref to a token among outstanding tokens for that operator
-  → `From` must equal the original recipient → `performCheckin` /
-  `performAck`.
-- Never deletes or moves mail. Marks `\Seen` only on messages it handled.
-- On IMAP failure: `notifyThrottled` once ("reply-by-email is down; links
-  still work"), retry with backoff. Never affects the fire path.
+Poller (`utils/inboundMail.js`): `imapflow` + `mailparser`. Connect to
+the routine sending mailbox; `IDLE` where supported, else poll every 60 s;
+full resync on reconnect. Persist last UID + UIDVALIDITY per mailbox in
+`settings`. Per unseen message: discard bounces/auto-replies → extract
+code outside quotes → hash → look up live code → `From` must match →
+`performCheckin` / `performAck` → mark `\Seen`. Wrong code: increment
+`failed_attempts`; on the 5th retire and reissue. No code found: ignore
+silently (never answer unrecognised mail — that is how auto-reply loops
+start).
 
 ## UX
 
-Check-in email gains, directly under the button:
+Check-in email (also the arming check-in):
 
-> **No link access? Just reply to this email with the single word
-> `ALIVE`.**
+> **To confirm you are alive, reply to this email with this code:**
+> `K7M4-P2XQ`
+> Nothing else is needed. The reply can come from any phone or computer.
 
-First contact / annual ping / pre-fire warning gain:
+Arming is therefore the dry run it was meant to be: it proves the whole
+round trip — Deploy can send, the operator receives, Deploy can read the
+answer — before anything is allowed to fire.
 
-> **Or reply to this email with the single word `CONFIRM`.**
+First contact / annual ping / pre-fire warning:
 
-Receipts: a reply that registers a check-in gets a short confirmation
-email ("Check-in received by reply at 14:02 UTC — next check-in due
-<date>"). A reply to a stale or used check-in gets: "That check-in has
-already been used / expired. A fresh check-in email is on its way — reply
-`ALIVE` to that one." and a fresh check-in is sent immediately. A reply
-with no recognised word gets nothing (silence is safer than teaching an
-auto-responder loop).
+> **To confirm this address works, reply to this email with this code:**
+> `R8TF-3NQW`
 
-Dashboard: "Reply-by-email: connected — last checked 14:02 UTC" (or "not
-configured" / "error: …"). Last check-in shows "via link" / "via reply".
+Receipts: a correct code gets a one-line confirmation ("Check-in received
+at 14:02 UTC — next check-in due <date>"). An old or used code gets "That
+code has expired — a fresh check-in email is on its way." A wrong code
+gets one "That code didn't match" per live code (never more, to avoid
+loops). Anything else gets silence.
+
+Dashboard: "Email replies: connected — last checked 14:02 UTC" (or "not
+configured" / "error: … — remote check-ins are NOT working"). Each
+check-in records `via: reply | dashboard`.
 
 ## Configuration
 
 Env: `IMAP_HOST`, `IMAP_PORT` (993), `IMAP_SECURE` (true), `IMAP_USER`,
 `IMAP_PASS`. With `EMAIL_PROVIDER=gmail` and no explicit IMAP settings,
-derive `imap.gmail.com:993` with the same app password (IMAP must be
-enabled in Gmail settings — document). `REPLY_BY_EMAIL=false` disables.
+derive `imap.gmail.com:993` with the same app password (Gmail: IMAP must
+be enabled in Settings → Forwarding and POP/IMAP — document with a
+screenshot). Deploy refuses `/activate` until the IMAP login has been
+verified, with a clear message.
 
-Start9 configurator: "Reply-by-email check-ins" toggle (default on) plus
-IMAP host/port/user/password fields shown for the custom-SMTP provider;
-Gmail derives them. Description states the mailbox-access scope.
+Start9 configurator: IMAP host/port/user/password fields for the custom
+SMTP provider; Gmail derives them. Description states the mailbox-access
+scope. `app_url` description rewritten: "Where your dashboard lives.
+Emails no longer contain links."
 
-Windows/.env docs: same variables; a paragraph explaining that with
-`APP_URL=http://localhost:3000` links only work on that machine and
-reply-by-email is how check-ins work from anywhere.
+`.env` / Windows docs: same variables; `APP_URL=http://localhost:3000` is
+now fine for a laptop install because emails never use it.
 
-## Dependencies on other roadmap items
+## Removed
 
-- **Persist check-in tokens (hashed)**: reply-by-email makes this more
-  pressing, not less — a reply can arrive days after a restart. Do it in
-  the same release. Store `sha256(token)`, kind, operator, created_at,
-  used_at; outstanding = not used and newest per operator.
+- `GET /deadman/checkin/:token`, `GET /deadman/ack/:token`, the in-memory
+  `checkinTokens` / `usedCheckinTokens` maps, `warningAckToken`,
+  `beneficiary_pings.ping_token` (replaced by `code_hash`), the "I'm
+  Active" button, all `${APP_URL}/deadman/…` URLs, the Tor-Browser copy
+  in beneficiary emails (`torNotice`).
+- The migration retires every outstanding link token; operators with a
+  live switch receive a fresh check-in email carrying a code on first
+  start after upgrade.
 
 ## Out of scope for v1
 
-- DKIM/SPF verification of inbound replies (`mailauth`); v1 relies on the
-  token secret, as links do.
+- DKIM/SPF verification of inbound mail (`mailauth`).
 - Treating bounced beneficiary pings as dead-address evidence.
-- Proton Mail (no IMAP without Bridge) — document as unsupported for reply.
+- Proton Mail (no IMAP without Bridge) — documented as unsupported.
 
 ## Effort
 
-Roughly 2–3 working days: headers + copy (½), parser + fixtures (½),
-handler refactor (½), poller + state (1), config plumbing + docs (½),
-dashboard status + sandbox test hook (`POST /internal/test/inbound`,
-enabled only by `DEPLOY_TEST_HOOKS=1`) (½). Plus one live test against
-a real Gmail account before release.
+Roughly 3 days: code generation + hashed persistence + migration (½),
+parser + fixtures (½), handler refactor + route removal (½), poller +
+state + fail-safe (1), config / IMAP verify / docs (½), dashboard status +
+sandbox test hook (`POST /internal/test/inbound`, only with
+`DEPLOY_TEST_HOOKS=1`) (½). Plus one live pass against a real Gmail
+account from a phone off the LAN before release.
 
 ## Test plan
 
-- Unit: parser fixtures above; short-ref resolution; auto-reply rejection.
-- Sandbox E2E (compressed timers): arm via link; check in via injected
-  reply; go silent → warning; beneficiary `CONFIRM` via injected reply;
-  stale-token reply → fresh check-in sent; vacation-style reply → ignored,
-  switch fires on schedule.
-- Restart mid-cycle: reply arriving after restart is processed once.
-- Live: Gmail account, reply from a phone off the LAN, all three keys
-  exercised (normal reply; subject edited; quote stripped).
+- Unit: parser fixtures; alphabet/normalisation; lockout after 5.
+- Sandbox E2E (compressed timers): deploy → arming code by injected reply
+  → armed; check-in by reply; wrong code ×5 → reissue; old code → fresh
+  email; vacation-style reply (auto-submitted, no code outside quote) →
+  ignored, switch fires on schedule; beneficiary ack by reply; opted-out
+  recipient untouched.
+- Restart mid-cycle: a reply arriving during the restart is processed once
+  afterwards (UID tracking).
+- Fail-safe: IMAP down across a warning tick → warning held, ntfy sent;
+  IMAP back → backlog processed, warning stands down if a code arrived.
+- Live: Gmail, phone off the LAN, reply from Gmail app, Apple Mail and
+  Outlook mobile.
