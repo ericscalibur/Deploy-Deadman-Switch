@@ -6,6 +6,19 @@ automatically with the next version bump.
 
 ## Next up (post-v2.1.2)
 
+- **Reply-by-email check-ins and acknowledgements** (target v2.2.0; full
+  spec in `docs/reply-by-email.md`): every actionable link depends on
+  `APP_URL` being reachable from wherever the reader is — the onion on
+  Start9, only the LAN or the machine itself on a laptop. Make email
+  sufficient on its own: reply `ALIVE` to a check-in, `CONFIRM` to a
+  first-contact or pre-fire warning. Deploy reads its own sending mailbox
+  over IMAP and matches replies by Message-ID / subject tag / quoted URL.
+  The required word plus auto-reply-header rejection is what stops a dead
+  operator's vacation responder from keeping the switch alive; only the
+  current token is accepted, so old mail cannot be replayed; a reply to a
+  stale check-in gets a fresh one by return. Links stay as the fast path.
+  Ship together with hashed token persistence (below) — replies can arrive
+  after a restart.
 - **Persist check-in tokens (hashed) in the DB**: tokens live in memory, so
   any restart invalidates every outstanding check-in/arming link until the
   next email goes out. Observed live 2026-09-03 (config save → restart →
