@@ -145,7 +145,13 @@ describe("CODE_REGEX in free text", () => {
     assert.strictEqual("K7M4P2XQ9".match(CODE_REGEX), null);
   });
 
-  test("does not match across a line break", () => {
+  test("does not match across a line break or a bare space", () => {
     assert.strictEqual("K7M4\nP2XQ".match(CODE_REGEX), null);
+    assert.strictEqual("K7M4 P2XQ".match(CODE_REGEX), null);
+  });
+
+  test("a word before a hyphenated code does not steal its first half", () => {
+    const m = "then K7M4-P2XQ".match(CODE_REGEX);
+    assert.strictEqual(normalizeCode(m[0]), "K7M4P2XQ");
   });
 });

@@ -1,0 +1,26 @@
+Return-Path: <>
+From: Mail Delivery System <MAILER-DAEMON@mx.example.com>
+To: deploy@example.com
+Subject: Undelivered Mail Returned to Sender
+Date: Thu, 18 Sep 2026 12:02:00 +0000
+Message-ID: <bounce@mx.example.com>
+Auto-Submitted: auto-replied
+Content-Type: multipart/report; report-type=delivery-status; boundary="b1"
+MIME-Version: 1.0
+
+--b1
+Content-Type: text/plain
+
+This is the mail system at host mx.example.com. Your message could not be delivered.
+
+--b1
+Content-Type: message/rfc822
+
+Subject: Deploy check-in
+To: dead@example.com
+
+To confirm you are alive, reply to this email with this code:
+
+    K7M4-P2XQ
+
+--b1--

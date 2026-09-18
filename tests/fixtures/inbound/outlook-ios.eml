@@ -1,0 +1,33 @@
+From: Operator Person <op@example.com>
+To: deploy@example.com
+Subject: Re: Deploy check-in — 18 Sep 2026 12:01 UTC
+Date: Thu, 18 Sep 2026 12:10:00 +0000
+Message-ID: <OutlookIOS-91011@prod.outlook.com>
+In-Reply-To: <checkin-1@deploy.example.com>
+Content-Type: multipart/alternative; boundary="_000_ios_"
+MIME-Version: 1.0
+
+--_000_ios_
+Content-Type: text/plain; charset="utf-8"
+
+K7M4-P2XQ
+
+Get Outlook for iOS
+________________________________
+From: Deploy Deadman Switch <deploy@example.com>
+Sent: Thursday, September 18, 2026 2:01:12 PM
+To: Operator Person <op@example.com>
+Subject: Deploy check-in — 18 Sep 2026 12:01 UTC
+
+Check-in required
+
+To confirm you are alive, reply to this email with this code:
+
+    H2WX-Q9TR
+
+--_000_ios_
+Content-Type: text/html; charset="utf-8"
+
+<html><body><div>K7M4-P2XQ</div><div><br></div><div id="ms-outlook-mobile-signature">Get Outlook for iOS</div><hr style="display:inline-block;width:98%"><div id="divRplyFwdMsg"><b>From:</b> Deploy Deadman Switch<br><b>Sent:</b> Thursday, September 18, 2026 2:01:12 PM<br><b>To:</b> op@example.com<br><b>Subject:</b> Deploy check-in</div><div>H2WX-Q9TR</div></body></html>
+
+--_000_ios_--

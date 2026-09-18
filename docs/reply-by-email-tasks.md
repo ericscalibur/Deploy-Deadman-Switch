@@ -50,20 +50,20 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
 - [x] Nothing in `sendDeadmanEmails` (CRITICAL) changes.
 
 ## 4. Inbound parser (`utils/inboundParser.js` + `tests/inboundParser.test.js`)
-- [ ] `isAutoReply(headers)`: `Auto-Submitted` ≠ `no`, `X-Autoreply`,
+- [x] `isAutoReply(headers)`: `Auto-Submitted` ≠ `no`, `X-Autoreply`,
       `X-Autorespond`, `X-Auto-Response-Suppress`, `Precedence`
       bulk|auto_reply|junk|list, `List-Id`. `isBounce(parsed)`:
       `mailer-daemon`/`postmaster` From, empty Return-Path,
       `multipart/report`.
-- [ ] `visibleText(parsed)`: prefer text part; else html → strip
+- [x] `visibleText(parsed)`: prefer text part; else html → strip
       `<blockquote>`, `.gmail_quote`, `#divRplyFwdMsg`, `.yahoo_quoted`,
       `#appendonsend`, then to text. Then cut at the first quote marker
       (leading `>`, `On … wrote:`, `-----Original Message-----`,
       `________________________________`, `From:` followed within 3 lines
       by `Sent:|Date:` and `To:`, and the fr/de/es Gmail/Apple variants).
-- [ ] `extractCode(subject, visibleText)` → normalized code or null
+- [x] `extractCode(subject, visibleText)` → normalized code or null
       (subject first, then body; first match wins).
-- [ ] Fixtures under `tests/fixtures/inbound/`: gmail-web, gmail-ios,
+- [x] Fixtures under `tests/fixtures/inbound/`: gmail-web, gmail-ios,
       gmail-android, outlook-desktop, outlook-web, outlook-ios, apple-mail,
       thunderbird, proton-web; each top-posted; plus bottom-posted,
       quote-stripped, vacation (Auto-Submitted), helpdesk auto-ack quoting

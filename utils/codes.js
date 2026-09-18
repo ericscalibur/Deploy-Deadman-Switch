@@ -17,14 +17,16 @@ const CODE_LENGTH = 8;
 // One symbol class, reused by every pattern below so they cannot drift.
 const SYMBOL = "[2-9A-HJKMNP-TV-Z]";
 
-// A code as it appears in free text: two groups of four, optionally joined by
-// a single separator (hyphen, en/em dash, or a space — phone keyboards
-// autocorrect "K7M4-P2XQ" into "K7M4- P2XQ" or "K7M4 -P2XQ", so the
-// separator may also carry one stray space on either side). Case-insensitive
-// because the reader may type it in lower case; word-bounded so it is not
-// found inside a longer token. Never anchored: it is used to *find* codes.
+// A code as it appears in free text: eight symbols, optionally split after
+// four by a hyphen (or en/em dash — mail clients "smarten" hyphens). Phone
+// keyboards autocorrect "K7M4-P2XQ" into "K7M4- P2XQ" or "K7M4 -P2XQ", so the
+// hyphen may carry one stray space on either side. A bare space is NOT a
+// separator: "then K7M4-P2XQ" would otherwise be read as THEN+K7M4 first and
+// the real code lost. Case-insensitive because the reader may type it in
+// lower case; word-bounded so it is not found inside a longer token. Never
+// anchored: it is used to *find* codes.
 const CODE_REGEX = new RegExp(
-  `\\b(${SYMBOL}{4})(?:[ \\t]?[-\\u2013\\u2014][ \\t]?|[ \\t])?(${SYMBOL}{4})\\b`,
+  `\\b(${SYMBOL}{4})(?:[ \\t]?[-\\u2013\\u2014][ \\t]?)?(${SYMBOL}{4})\\b`,
   "i",
 );
 
