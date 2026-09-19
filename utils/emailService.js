@@ -13,6 +13,20 @@ const NTFY_REPEAT_MS = 60 * 60 * 1000;
 // all; URGENT marks the beneficiary pre-fire warning; CRITICAL is reserved
 // for the trigger itself; WARNING marks operator-side operational alerts.
 
+// Beneficiary addresses never appear in the log: the database keeps them
+// encrypted and the ping table keeps only hashes, and a plaintext address in
+// the StartOS log would undo that. Log lines name a recipient by a short
+// hash prefix instead ("recipient 3f9a2c1d"). The operator's own address is
+// the account name and is logged as such.
+const { createHash } = require("crypto");
+function tag(address) {
+  const h = createHash("sha256")
+    .update(String(address || "").trim().toLowerCase())
+    .digest("hex")
+    .slice(0, 8);
+  return `recipient ${h}`;
+}
+
 // Reply-by-email (v2.2.0): no email Deploy sends carries a link back to
 // this server. Every actionable email carries a short code instead, and the
 // reader replies with it — from any phone or computer, no reachability
@@ -548,7 +562,7 @@ This is an automated message from Deploy Deadman Switch.
       const sendPromises = configuredEmails.map(async (email, index) => {
         const recipientEmail = email.to || email.address;
         console.log(
-          `📧 Sending deadman email ${index + 1} to ${recipientEmail}`,
+          `📧 Sending deadman email ${index + 1} to ${tag(recipientEmail)}`,
         );
 
         // Generate QR code if an encrypted payload is attached to this email
@@ -703,13 +717,13 @@ Print or save this entire email — it contains the encrypted payload needed for
         try {
           const { info } = await this._sendTrigger(mailOptions);
           console.log(
-            `✅ Deadman email ${index + 1} sent successfully to ${recipientEmail}`,
+            `✅ Deadman email ${index + 1} sent successfully to ${tag(recipientEmail)}`,
             info.messageId,
           );
           return { success: true, index, messageId: info.messageId };
         } catch (error) {
           console.error(
-            `❌ Failed to send deadman email ${index + 1} to ${recipientEmail}:`,
+            `❌ Failed to send deadman email ${index + 1} to ${tag(recipientEmail)}:`,
             error,
           );
           return { success: false, index, error: error.message };
@@ -745,7 +759,7 @@ Print or save this entire email — it contains the encrypted payload needed for
   ) {
     if (!(await this.ensureReady())) {
       console.error(
-        `❌ Email service not initialized — beneficiary warning to ${recipientEmail} NOT sent.`,
+        `❌ Email service not initialized — beneficiary warning to ${tag(recipientEmail)} NOT sent.`,
       );
       return false;
     }
@@ -808,13 +822,13 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     try {
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(
-        `✅ Beneficiary warning sent to ${recipientEmail}`,
+        `✅ Beneficiary warning sent to ${tag(recipientEmail)}`,
         info.messageId,
       );
       return true;
     } catch (error) {
       console.error(
-        `❌ Failed to send beneficiary warning to ${recipientEmail}:`,
+        `❌ Failed to send beneficiary warning to ${tag(recipientEmail)}:`,
         error,
       );
       return false;
@@ -923,7 +937,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
   ) {
     if (!(await this.ensureReady())) {
       console.error(
-        `❌ Email service not initialized — beneficiary ping to ${recipientEmail} NOT sent.`,
+        `❌ Email service not initialized — beneficiary ping to ${tag(recipientEmail)} NOT sent.`,
       );
       return false;
     }
@@ -947,13 +961,13 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
     try {
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(
-        `✅ Beneficiary liveness ping sent to ${recipientEmail}`,
+        `✅ Beneficiary liveness ping sent to ${tag(recipientEmail)}`,
         info.messageId,
       );
       return true;
     } catch (error) {
       console.error(
-        `❌ Failed to send beneficiary ping to ${recipientEmail}:`,
+        `❌ Failed to send beneficiary ping to ${tag(recipientEmail)}:`,
         error,
       );
       return false;
@@ -1015,7 +1029,7 @@ Automated message from Deploy Deadman Switch.
   async sendBeneficiaryStandDown(recipientEmail, operatorEmail) {
     if (!(await this.ensureReady())) {
       console.error(
-        `❌ Email service not initialized — stand-down notice to ${recipientEmail} NOT sent.`,
+        `❌ Email service not initialized — stand-down notice to ${tag(recipientEmail)} NOT sent.`,
       );
       return false;
     }
@@ -1040,13 +1054,13 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     try {
       const { info } = await this._sendWithFallback(mailOptions);
       console.log(
-        `✅ Stand-down notice sent to ${recipientEmail}`,
+        `✅ Stand-down notice sent to ${tag(recipientEmail)}`,
         info.messageId,
       );
       return true;
     } catch (error) {
       console.error(
-        `❌ Failed to send stand-down notice to ${recipientEmail}:`,
+        `❌ Failed to send stand-down notice to ${tag(recipientEmail)}:`,
         error,
       );
       return false;
@@ -1059,7 +1073,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
   // loops start.
   async sendReceipt(to, subject, text, { inReplyTo = null, references = null } = {}) {
     if (!(await this.ensureReady())) {
-      console.error(`❌ Email service not initialized — receipt to ${to} NOT sent.`);
+      console.error(`❌ Email service not initialized — receipt to ${tag(to)} NOT sent.`);
       return false;
     }
     const esc = (v) =>
@@ -1078,10 +1092,10 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     }
     try {
       const { info } = await this._sendWithFallback(mailOptions);
-      console.log(`✅ Receipt sent to ${to}: ${subject}`, info.messageId);
+      console.log(`✅ Receipt sent to ${tag(to)}: ${subject}`, info.messageId);
       return true;
     } catch (error) {
-      console.error(`❌ Failed to send receipt to ${to}:`, error);
+      console.error(`❌ Failed to send receipt to ${tag(to)}:`, error);
       return false;
     }
   }

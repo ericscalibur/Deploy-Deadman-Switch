@@ -54,24 +54,24 @@
             <p>
                 &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
                 service. Here’s how it works. You will receive a Check-In at
-                regular Intervals. When you receive the email, reply to it with
+                regular intervals. When you receive the email, reply to it with
                 the short code it contains — that reply, from any phone or
                 computer, is what resets the timer. Emails contain no links,
                 and there is no other way to check in: if replying ever stops
                 working, this page will say so, and the switch should be
                 aborted until mail is fixed. If the Period of
                 Inactivity elapses without a check-in, the Deadman Switch will
-                activate and your emails will be sent. All your data is
+                trigger and your emails will be sent. All your data is
                 encrypted until the final emails are sent. You can send up to
                 20 emails.
                 <br /><br />
                 &nbsp;&nbsp;&nbsp;&nbsp;Deploy also asks each recipient to
                 confirm their address by replying with a code — their reply is
                 the only real proof the address still reaches them. It is on by
-                default and we recommend leaving it that way; with it off, an
-                address that has quietly died is never discovered. You can turn
-                it off for any individual recipient when you edit their message,
-                if that person must learn nothing until it arrives.
+                default and we recommend leaving it that way; with it off, we
+                cannot validate the communication channel. If you uncheck this
+                box, your beneficiary will remain in the dark (and potentially
+                unreachable) until the deadman switch is triggered.
             </p>
 
             <form id="setup-form">
@@ -190,8 +190,9 @@
                 </div>
 
                 <!-- Whether Deploy can read the replies to its own emails.
-                     Red when it cannot: check-ins are then NOT working;
-                     fix the mail settings or abort. -->
+                     When healthy it is folded into the Last activity line
+                     above; this element only appears for the problem states
+                     (not configured, disabled, reader down), in red. -->
                 <div id="inbound-status" class="inbound-status" style="display: none"></div>
 
             </div>

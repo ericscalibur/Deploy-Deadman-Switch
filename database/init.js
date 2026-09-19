@@ -20,7 +20,7 @@ function initializeDatabase() {
                 reject(err);
                 return;
             }
-            console.log('Connected to SQLite database at:', DB_PATH);
+            // (path reported once at completion)
         });
 
         // Enable foreign keys
@@ -162,7 +162,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Users table created or already exists');
+
             });
 
             db.run(createUserDataTable, (err) => {
@@ -171,7 +171,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Encrypted user data table created or already exists');
+
             });
 
             db.run(createSessionsTable, (err) => {
@@ -180,7 +180,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Deadman sessions table created or already exists');
+
             });
 
             db.run(createAuditTable, (err) => {
@@ -189,7 +189,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Audit log table created or already exists');
+
             });
 
             db.run(createSettingsTable, (err) => {
@@ -198,7 +198,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Settings table created or already exists');
+
             });
 
             db.run(createBeneficiaryPingsTable, (err) => {
@@ -207,7 +207,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Beneficiary pings table created or already exists');
+
             });
 
             db.run(createReplyCodesTable, (err) => {
@@ -216,7 +216,7 @@ function initializeDatabase() {
                     reject(err);
                     return;
                 }
-                console.log('Reply codes table created or already exists');
+
             });
 
             // Migration: add server_encrypted_emails to existing deadman_sessions
@@ -249,7 +249,7 @@ function initializeDatabase() {
                 db.run(sql, (alterErr) => {
                     if (alterErr) {
                         if (/duplicate column name/i.test(alterErr.message)) {
-                            console.log(`Migration: ${column} column already exists`);
+                            // already migrated — silent
                         } else {
                             console.error(`Error adding ${column} column:`, alterErr.message);
                         }
@@ -264,8 +264,6 @@ function initializeDatabase() {
                 db.run(indexSQL, (err) => {
                     if (err) {
                         console.error(`Error creating index ${i + 1}:`, err.message);
-                    } else {
-                        console.log(`Index ${i + 1} created or already exists`);
                     }
                 });
             });
@@ -276,7 +274,7 @@ function initializeDatabase() {
                     console.error('Error closing database:', err.message);
                     reject(err);
                 } else {
-                    console.log('Database initialization complete');
+                    console.log('Database ready at', DB_PATH);
                     resolve(DB_PATH);
                 }
             });

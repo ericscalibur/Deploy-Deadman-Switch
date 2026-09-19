@@ -1,7 +1,22 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.2.0
+version: 2.2.1
 release-notes: |
+  - (2.2.1) The dashboard's "Email replies" line is folded into the Last
+    activity line as "Reply mailbox: connected, checked <time>". It reports
+    whether Deploy can read the replies to its own emails — check-ins and
+    beneficiary confirmations alike — and when it last looked; the red
+    banner for problem states is unchanged.
+  - Beneficiary addresses no longer appear in the service log. The
+    database keeps them encrypted and the contact table keeps only hashes;
+    a plaintext address in the StartOS log undid that. Log lines now name
+    a recipient by a short hash prefix.
+  - Far quieter logs: the dashboard's status poll, the periodic timer
+    save, the database start-up and leftover activation debugging no
+    longer print anything unless something is wrong.
+  - Dashboard copy: check-ins arrive at regular intervals; the switch
+    "triggers"; the address-confirmation paragraph says plainly what
+    turning it off costs.
   - (2.2.0) Check-ins and address confirmations are now done by replying to
     the email with a short code, from any phone or computer. Every check-in
     email, first-contact email, yearly address check and pre-fire warning

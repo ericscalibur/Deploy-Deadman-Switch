@@ -1238,10 +1238,6 @@ setTimeout(() => {
 const SAVE_INTERVAL = 5 * 60 * 1000; // Save every 5 minutes
 setInterval(async () => {
   try {
-    console.log(
-      `💾 PERIODIC SAVE: Saving timer states for ${activeDeadmanSwitches.size} active switches`,
-    );
-
     for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
       try {
         // Pending switches are excluded: they have no deadline, and writing
@@ -1272,11 +1268,6 @@ setInterval(async () => {
       }
     }
 
-    if (activeDeadmanSwitches.size > 0) {
-      console.log(
-        `✅ PERIODIC SAVE: Completed saving ${activeDeadmanSwitches.size} timer states`,
-      );
-    }
   } catch (error) {
     console.error(
       "❌ PERIODIC SAVE: Critical error during periodic save:",
@@ -1763,7 +1754,6 @@ router.get("/status", authenticateToken, async (req, res) => {
 router.get("/timer-status", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
-    console.log(`🔍 TIMER-STATUS: Request from ${userEmail}`);
     let beneficiaryStamp = "";
     try {
       beneficiaryStamp = await userService.getBeneficiaryStamp(req.user.userId);
@@ -1773,18 +1763,6 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
     if (activeDeadmanSwitches.has(userEmail)) {
       const switchData = activeDeadmanSwitches.get(userEmail);
       const now = Date.now();
-
-      console.log(`📊 TIMER-STATUS: Active switch found for ${userEmail}`);
-      console.log(`   - Current time: ${now}`);
-      console.log(`   - Next checkin: ${switchData.nextCheckin}`);
-      console.log(`   - Deadman activation: ${switchData.deadmanActivation}`);
-      console.log(`   - Last activity: ${switchData.lastActivity}`);
-      console.log(
-        `   - Time until next checkin: ${switchData.nextCheckin - now}ms`,
-      );
-      console.log(
-        `   - Time until deadman: ${switchData.deadmanActivation - now}ms`,
-      );
 
       res.json({
         success: true,
@@ -1810,7 +1788,6 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
         },
       });
     } else {
-      console.log(`❌ TIMER-STATUS: No active switch for ${userEmail}`);
       res.json({
         success: true,
         active: false,
@@ -1833,10 +1810,9 @@ router.post("/activate", authenticateToken, async (req, res) => {
     const checkinMethod = req.body.checkinMethod || "email";
 
     // Never log req.body here — it contains the user's plaintext password.
-    console.log(`🚀 ACTIVATION: Request from ${userEmail}`);
-    console.log(`📋 ACTIVATION: checkinMethod = "${checkinMethod}"`);
-    console.log(`📋 ACTIVATION: checkinInterval = "${checkinInterval}"`);
-    console.log(`📋 ACTIVATION: inactivityPeriod = "${inactivityPeriod}"`);
+    console.log(
+      `🚀 ACTIVATION: Request from ${userEmail} (check-in ${checkinInterval}, inactivity ${inactivityPeriod})`,
+    );
 
     // Password required for encryption/decryption
     if (!password) {
@@ -1921,26 +1897,8 @@ router.post("/activate", authenticateToken, async (req, res) => {
     }
 
     // Calculate timer intervals
-    console.log(`🔍 DEBUG: Received checkinInterval: "${checkinInterval}"`);
-    console.log(`🔍 DEBUG: Received inactivityPeriod: "${inactivityPeriod}"`);
-
-    // INLINE DEBUG TEST
-    console.log(
-      `🧪 INLINE TEST: About to call getIntervalMs("${checkinInterval}")`,
-    );
     const checkinIntervalMs = getIntervalMs(checkinInterval);
-    console.log(
-      `🧪 INLINE TEST: getIntervalMs("${checkinInterval}") returned: ${checkinIntervalMs}`,
-      `🧪 INLINE TEST: That equals ${checkinIntervalMs / 1000 / 60} minutes`,
-    );
-
     const inactivityMs = getInactivityMs(inactivityPeriod);
-    console.log(
-      `🔍 DEBUG: Calculated checkinIntervalMs: ${checkinIntervalMs} (${checkinIntervalMs / 1000 / 60} minutes)`,
-    );
-    console.log(
-      `🔍 DEBUG: Calculated inactivityMs: ${inactivityMs} (${inactivityMs / 1000 / 60} minutes)`,
-    );
 
     // Verify the calculations are correct
     if (checkinIntervalMs === 7200000) {
@@ -2035,11 +1993,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
       deadmanTimer: null,
     };
 
-    console.log(`🔄 DEBUG: Creating switchData for ${userEmail}`);
-    console.log(`📧 DEBUG: Emails in switchData: ${emails.length}`);
-    emails.forEach((email, i) => {
-      console.log(`📧 DEBUG: Email ${i + 1}: ${email.to || email.address}`);
-    });
+    console.log(`🔄 ACTIVATION: Switch created for ${userEmail} with ${emails.length} recipient(s)`);
 
     // No countdown timers yet — the switch holds in pending, re-sending the
     // arming email each interval. The real timers are created in performCheckin()
@@ -2173,9 +2127,6 @@ async function executeDeadmanActivation(userEmail, emails, switchData = null) {
     }
 
     console.log(`   - Emails to send: ${emails.length}`);
-    console.log(
-      `   - Email addresses: ${emails.map((e) => e.to || e.address).join(", ")}`,
-    );
 
     // Capture the session token before cleanup wipes in-memory state. Without
     // closing the DB session on delivery, every later restart would re-fire
@@ -2674,15 +2625,6 @@ router.post("/recover", authenticateToken, async (req, res) => {
         );
       }
     }
-
-    console.log(`📊 DEBUG: After activation:`);
-    console.log(
-      `📊 DEBUG: activeDeadmanSwitches size: ${activeDeadmanSwitches.size}`,
-    );
-    console.log(`📊 DEBUG: userEmails size: ${userEmails.size}`);
-    console.log(
-      `📊 DEBUG: userEmails for ${userEmail}: ${userEmails.get(userEmail)?.length || 0} emails`,
-    );
 
     console.log(
       `✅ RECOVERY: Successfully recovered deadman switch for ${userEmail}`,
@@ -3295,7 +3237,7 @@ async function handleInbound(parsed, meta = {}) {
         ? live.user_email
         : await resolveRecipientAddress(live);
       console.warn(
-        `🚫 INBOUND: ${live.kind} code for user ${live.user_id} arrived from ${from}, not the address it was sent to — rejected`,
+        `🚫 INBOUND: ${live.kind} code for user ${live.user_id} arrived from another address (${hashEmail(from).slice(0, 8)}), not the one it was sent to — rejected`,
       );
       if (original && receiptOnce(live.id, "mismatch")) {
         await emailService.sendReceipt(
@@ -3420,7 +3362,7 @@ async function handleInbound(parsed, meta = {}) {
     senderCodes[0];
   const attempts = await userService.bumpFailedAttempts(target.id);
   console.warn(
-    `🚫 INBOUND: wrong code from ${from} (attempt ${attempts}/${MAX_FAILED_ATTEMPTS} against live ${target.kind} code)`,
+    `🚫 INBOUND: wrong code from ${OPERATOR_KINDS.has(target.kind) ? from : "recipient " + hashEmail(from).slice(0, 8)} (attempt ${attempts}/${MAX_FAILED_ATTEMPTS} against live ${target.kind} code)`,
   );
   if (attempts >= MAX_FAILED_ATTEMPTS) {
     await userService.retireCode(target.id);

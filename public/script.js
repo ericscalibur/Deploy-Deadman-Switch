@@ -697,11 +697,25 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ---- Email-reply status (v2.2.0) -------------------------------------
   // One line under the countdowns. Red when replies cannot be received: at
   // that point remote check-ins are NOT working and the button is the path.
+  // Healthy → a short suffix on the Last activity line; anything else →
+  // its own (red or amber) element so it cannot be missed.
+  function inboundInlineText() {
+    const st = inboundState;
+    if (!st || !st.enabled || !st.configured || st.downSince) return "";
+    if (st.connected) {
+      return (
+        " · Reply mailbox: connected" +
+        (st.lastCheckedAt ? `, checked ${formatUtcDateTime(st.lastCheckedAt)}` : "")
+      );
+    }
+    return " · Reply mailbox: connecting…";
+  }
+
   function renderInboundStatus() {
     const el = document.getElementById("inbound-status");
     if (!el) return;
     const st = inboundState;
-    if (!st) {
+    if (!st || (st.enabled && st.configured && !st.downSince)) {
       el.style.display = "none";
       return;
     }
@@ -726,13 +740,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         (inboundHoldActive
           ? ` The warning and the trigger are held while this lasts (up to ${st.holdCapDays || 7} days).`
           : "");
-    } else if (st.connected) {
-      el.classList.add("inbound-ok");
-      text =
-        "Email replies: connected" +
-        (st.lastCheckedAt ? ` — last checked ${formatUtcDateTime(st.lastCheckedAt)}` : "");
-    } else {
-      text = "Email replies: connecting…";
     }
     if (st.testHooks) text += " (sandbox test hooks on)";
     el.textContent = text;
@@ -866,19 +873,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Update last activity display
     const lastActivityElement = document.getElementById("last-activity");
     if (lastActivityElement) {
+      const suffix = inboundInlineText();
       if (deadmanSwitchPending) {
         lastActivityElement.textContent =
-          "Awaiting your first check-in — reply to the email just sent to you with its code to arm the switch";
+          "Awaiting your first check-in — reply to the email just sent to you with its code to arm the switch" +
+          suffix;
       } else if (!deadmanSwitchActivated) {
-        lastActivityElement.textContent = "Not deployed";
+        lastActivityElement.textContent = "Not deployed" + suffix;
       } else {
         lastActivityElement.textContent =
           formatUtcDateTime(lastActivityTime) +
-          (lastCheckinVia === "reply"
-            ? " — via email reply"
-            : lastCheckinVia === "dashboard"
-              ? " — via dashboard"
-              : "");
+          (lastCheckinVia === "reply" ? " via email reply" : "") +
+          suffix;
       }
     }
   }
