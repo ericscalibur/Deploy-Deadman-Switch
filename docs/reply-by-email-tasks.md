@@ -180,7 +180,7 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
       email; clear → resumes.
 - [x] Live: real Gmail, phone off the LAN, Gmail app + Apple Mail +
       Outlook mobile, one arming and one check-in each.
-- [ ] Release: push → make build → start-sdk pack → start-cli s9pk convert
+- [x] Release: push → make build → start-sdk pack → start-cli s9pk convert
       → verify layers (grep `inboundMail`, no `deadman/checkin/`) →
       sideload → tag → sign → release.
 
