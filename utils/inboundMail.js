@@ -80,6 +80,17 @@ function isGmailHost(host) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ImapFlow's message is often just "Command failed"; the server's own
+// words are on the error object.
+function describeError(error) {
+  if (!error) return "unknown error";
+  const parts = [error.message];
+  if (error.serverResponseCode) parts.push(error.serverResponseCode);
+  if (error.responseText) parts.push(error.responseText);
+  if (error.command) parts.push(`(${error.command})`);
+  return parts.join(": ");
+}
+
 class InboundMail {
   constructor() {
     this.store = null; // { get(key), set(key, value), del(key) }
@@ -151,9 +162,9 @@ class InboundMail {
       return { ok: true };
     } catch (error) {
       try { client.close(); } catch (_) {}
-      this.state.error = error.message;
-      console.error(`❌ IMAP verification failed for ${cfg.user}@${cfg.host}: ${error.message}`);
-      return { ok: false, error: error.message };
+      this.state.error = describeError(error);
+      console.error(`❌ IMAP verification failed for ${cfg.user}@${cfg.host}: ${this.state.error}`);
+      return { ok: false, error: this.state.error };
     }
   }
 
@@ -259,7 +270,7 @@ class InboundMail {
       closed = resolve;
     });
     client.on("error", (err) => {
-      console.error(`❌ IMAP connection error: ${err.message}`);
+      console.error(`❌ IMAP connection error: ${describeError(err)}`);
     });
     client.on("close", () => closed(new Error("connection closed")));
     client.on("exists", () => this.poke());
@@ -325,7 +336,15 @@ class InboundMail {
     if (this._syncing) return this._syncing;
     this._syncing = (async () => {
       for (const folder of folders) {
-        await this._syncFolder(client, folder);
+        try {
+          await this._syncFolder(client, folder);
+        } catch (error) {
+          // INBOX failing is a real outage; the spam folder failing (Gmail
+          // occasionally refuses to select it) must not take the reader
+          // down with it.
+          if (folder === "INBOX" || !client.usable) throw error;
+          console.warn(`⚠️ IMAP: could not read ${folder} (${describeError(error)}); continuing with the other folders`);
+        }
       }
       // Leave INBOX selected so IDLE reports new mail there.
       if (!client.mailbox || client.mailbox.path !== "INBOX") {
@@ -376,7 +395,7 @@ class InboundMail {
         try {
           await this._processMessage(client, folder, meta);
         } catch (error) {
-          console.error(`❌ IMAP: processing ${folder} UID ${meta.uid} failed: ${error.message}`);
+          console.error(`❌ IMAP: processing ${folder} UID ${meta.uid} failed: ${describeError(error)}`);
         }
         lastUid = meta.uid;
         await this.store.set(lastKey, lastUid);
@@ -412,7 +431,7 @@ class InboundMail {
 
   async _markDown(error) {
     this.state.connected = false;
-    this.state.error = error ? error.message : "unknown error";
+    this.state.error = describeError(error);
     if (!this.state.downSince) {
       this.state.downSince = new Date().toISOString();
       try { await this.store.set("imap:down_since", this.state.downSince); } catch (_) {}
