@@ -51,15 +51,17 @@ automatically with the next version bump.
   outstanding link until the next email goes out; observed live
   2026-09-03.
 
-## Open decisions
+## Decided
 
-- **Receipt volume.** Every successful reply currently gets a one-line
-  receipt ("Deploy check-in received"), which on a shared-mailbox install
-  means three inbox items per cycle (check-in, own reply, receipt). Option
-  on the table: `CHECKIN_RECEIPTS=errors` — silent on a routine success,
-  still "switch armed" once, always the expired / wrong-code /
-  wrong-address receipts and the beneficiary confirmations. Trade-off: a
-  remote operator loses positive confirmation. Eric to decide (2026-09-18).
+- **Receipt volume (2026-09-19):** receipts stay as they are. The inbox
+  noise Eric saw was his own replies (and the beneficiaries' replies)
+  landing back in his personal inbox because Deploy sends from that same
+  Gmail account — inherent to a shared mailbox, and the fix is the
+  dedicated Deploy mailbox the docs recommend, not fewer receipts.
+  Possible later convenience for single-account installs: read
+  `[Gmail]/All Mail` instead of INBOX so a Gmail filter can archive
+  beneficiary threads without hiding them from the reader, plus a
+  `+deploy` Reply-To on beneficiary emails to give that filter a handle.
 
 ## Next up (post-v2.2.0)
 
