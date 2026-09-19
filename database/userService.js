@@ -685,16 +685,31 @@ class UserService {
     });
   }
 
-  // Issue a fresh code. Retires (retired_at = now) every live code with the
-  // same (user_id, kind[, ref][, recipient_hash]) first, so exactly one code
-  // is live per slot, then inserts the new one. Returns the plaintext code
-  // exactly once — it is not stored and cannot be recovered afterwards.
+  // Issue a fresh code. Returns the plaintext code exactly once — it is not
+  // stored and cannot be recovered afterwards.
+  //
+  // Beneficiary kinds (ping-ack, warning-ack): exactly one live code per
+  // slot — every live code with the same (user_id, kind, ref, recipient) is
+  // retired first.
+  //
+  // Operator kinds (arming, checkin): previous codes STAY live. Retiring on
+  // issue turned any reply that crossed a check-in tick into "expired" —
+  // seen live 2026-09-18: the operator answered the older of two emails a
+  // few seconds after the newer one went out, was told it had expired, and
+  // the switch fired on a living operator who had replied three times. All
+  // outstanding codes went to the same inbox for the same purpose, so
+  // keeping them live costs nothing; a successful check-in retires them
+  // all (see routes performCheckin), and at most MAX_LIVE_OPERATOR_CODES
+  // are outstanding — the oldest beyond that are retired.
   async issueCode({ kind, userId, recipientHash = null, ref = null }) {
     const codes = require("../utils/codes");
     if (!["arming", "checkin", "ping-ack", "warning-ack"].includes(kind)) {
       throw new Error(`Unknown reply-code kind: ${kind}`);
     }
-    await this.retireCodes({ userId, kind, ref, recipientHash });
+    const operatorKind = kind === "arming" || kind === "checkin";
+    if (!operatorKind) {
+      await this.retireCodes({ userId, kind, ref, recipientHash });
+    }
 
     // The UNIQUE on code_hash makes a collision an insert error rather than
     // a silent overwrite; retry with a new code (astronomically rare).
@@ -707,6 +722,7 @@ class UserService {
            VALUES (?, ?, ?, ?, ?)`,
           [hash, kind, userId, recipientHash, ref],
         );
+        if (operatorKind) await this._capLiveOperatorCodes(userId);
         return { id: lastID, code, hash };
       } catch (err) {
         if (err.code !== "SQLITE_CONSTRAINT_UNIQUE" && !/UNIQUE/i.test(err.message)) {
@@ -715,6 +731,26 @@ class UserService {
       }
     }
     throw new Error("Could not issue a unique reply code");
+  }
+
+  // Keep at most MAX_LIVE_OPERATOR_CODES arming/check-in codes live per
+  // operator (oldest retired first).
+  async _capLiveOperatorCodes(userId) {
+    const rows = await this._all(
+      `SELECT id FROM reply_codes
+        WHERE user_id = ? AND kind IN ('arming', 'checkin')
+          AND used_at IS NULL AND retired_at IS NULL
+        ORDER BY id DESC`,
+      [userId],
+    );
+    const excess = rows.slice(UserService.MAX_LIVE_OPERATOR_CODES).map((r) => r.id);
+    if (excess.length) {
+      await this._run(
+        `UPDATE reply_codes SET retired_at = CURRENT_TIMESTAMP WHERE id IN (${excess.map(() => "?").join(",")})`,
+        excess,
+      );
+    }
+    return excess.length;
   }
 
   // Retire every live code matching the given slot. Any of kind/ref/
@@ -983,5 +1019,7 @@ class UserService {
     });
   }
 }
+
+UserService.MAX_LIVE_OPERATOR_CODES = 5;
 
 module.exports = UserService;

@@ -41,8 +41,18 @@ One path for remote users, one for the operator at home. No "or".
   (checkin / arming / ping-ack / warning-ack), operator id, recipient
   address, created_at, used_at, failed_attempts. This absorbs the
   "persist check-in tokens (hashed)" roadmap item; nothing lives in memory.
-- Exactly one live code per (operator, kind[, recipient]). Issuing a new
-  check-in email retires the previous code.
+- Exactly one live code per (operator, kind, recipient) for the
+  beneficiary kinds; issuing a new ping or warning retires the previous.
+- **Amended 2026-09-18 after the live pass:** check-in and arming codes
+  are NOT retired when a newer one is issued. Every outstanding code stays
+  live (at most five; the oldest beyond that is retired) until a check-in
+  succeeds by any means, which retires them all, or the switch stops.
+  Retiring on issue turned any reply that crossed a check-in tick into
+  "expired": the operator answered the older of two emails seconds after
+  the newer one went out, the reissue it triggered retired the newer one
+  too, and the switch fired on a living operator who had replied three
+  times. All outstanding codes went to the same inbox for the same
+  purpose, so keeping them live is no weaker.
 - After 5 wrong codes against a live code, it is retired and a fresh
   email is issued (limits brute force to 5 × 2^-40 per email).
 

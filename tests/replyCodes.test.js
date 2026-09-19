@@ -47,14 +47,29 @@ describe("issueCode / findLiveCode", () => {
     }
   });
 
-  test("issuing a new code for the same slot retires the previous one", async () => {
-    const a = await svc.issueCode({ kind: "checkin", userId, ref: "sess-2" });
-    const b = await svc.issueCode({ kind: "checkin", userId, ref: "sess-2" });
-    assert.strictEqual(await svc.findLiveCode(a.hash), null);
-    assert.ok(await svc.findLiveCode(b.hash));
-    const stale = await svc.findCodeByHash(a.hash);
+  test("operator codes stay live when a newer one is issued, capped at 5", async () => {
+    const u = await svc.createUser("cap@example.com", "pw", {});
+    const issued = [];
+    for (let i = 0; i < 7; i++) {
+      issued.push(await svc.issueCode({ kind: i === 0 ? "arming" : "checkin", userId: u.userId, ref: "sess-2" }));
+    }
+    // the two oldest are retired, the newest five are all live
+    assert.strictEqual(await svc.findLiveCode(issued[0].hash), null);
+    assert.strictEqual(await svc.findLiveCode(issued[1].hash), null);
+    for (const c of issued.slice(2)) assert.ok(await svc.findLiveCode(c.hash), "recent code live");
+    const stale = await svc.findCodeByHash(issued[0].hash);
     assert.ok(stale.retired_at, "old code carries retired_at");
     assert.strictEqual(stale.used_at, null);
+    // a check-in retires them all
+    await svc.retireCodes({ userId: u.userId, kinds: ["arming", "checkin"] });
+    for (const c of issued) assert.strictEqual(await svc.findLiveCode(c.hash), null);
+  });
+
+  test("beneficiary codes: issuing a new code for the same slot retires the previous one", async () => {
+    const a = await svc.issueCode({ kind: "ping-ack", userId, ref: "5", recipientHash: "h5" });
+    const b = await svc.issueCode({ kind: "ping-ack", userId, ref: "5", recipientHash: "h5" });
+    assert.strictEqual(await svc.findLiveCode(a.hash), null);
+    assert.ok(await svc.findLiveCode(b.hash));
   });
 
   test("slots are independent across ref and recipient", async () => {

@@ -332,29 +332,34 @@ async function lockoutAndExpiry() {
   const fresh = await waitMail((m) => to(m) === OP && isCheckinMail(m), "reissued check-in email after lockout", 30000);
   const codeE = codeOf(fresh);
   assert(codeE !== codeD, "reissued code differs");
-  res = await inject(reply(OP, formatCode(codeD), c2));
-  assert(res.action === "expired", "locked-out code is expired");
-  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "expired receipt");
   await sleep(1200); // REISSUE_MIN_GAP_MS
-  // stale code → expired + fresh email (reissue)
+  // locked-out code → expired + fresh email (reissue)
+  res = await inject(reply(OP, formatCode(codeD), c2));
+  assert(res.action === "expired" && res.reissued === true, "locked-out code → expired + reissue");
+  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "expired receipt");
+  const fresh2 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "fresh check-in after expired reply", 30000);
+  // E (from the lockout reissue) is still live alongside fresh2's code:
+  // an older unanswered code must keep working.
   res = await inject(reply(OP, formatCode(codeE), fresh));
-  assert(res.action === "checkin", "fresh code checks in");
-  const c3 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "next periodic check-in", 120000);
-  const codeF = codeOf(c3);
+  assert(res.action === "checkin", "older outstanding code still checks in");
+  // …and that check-in retired every other outstanding code.
+  res = await inject(reply(OP, formatCode(codeOf(fresh2)), fresh2));
+  assert(res.action === "expired", "other outstanding code retired by the check-in");
   await sleep(1200);
   res = await inject(reply(OP, formatCode(codeE), fresh)); // E is used → repeat
   assert(res.action === "repeat", "used code → repeat, no reissue");
-  // make F stale by waiting for the following tick, then reply with F
+  // two ticks unanswered: replying to the OLDER email must work (the live
+  // trap of 2026-09-18), and the newer one is then retired.
+  const c3 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "next periodic check-in", 120000);
   const c4 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "following periodic check-in", 120000);
-  res = await inject(reply(OP, formatCode(codeF), c3));
-  assert(res.action === "expired" && res.reissued === true, "superseded code → expired + reissue");
-  const fresh2 = await waitMail((m) => to(m) === OP && isCheckinMail(m) && !seen.has(m.file), "fresh check-in after expired reply", 30000);
-  res = await inject(reply(OP, formatCode(codeOf(fresh2)), fresh2));
-  assert(res.action === "checkin", "fresh code after expiry checks in");
+  res = await inject(reply(OP, formatCode(codeOf(c3)), c3));
+  assert(res.action === "checkin", "reply to the older of two check-in emails checks in");
+  res = await inject(reply(OP, formatCode(codeOf(c4)), c4));
+  assert(res.action === "expired" && res.switchGone === false, "the newer email's code is retired by that check-in");
   return c4;
 }
 
-async function silenceToFire() {
+async function silenceToFire(lastCheckin) {
   // Earlier steps may already have produced a warning (two unanswered ticks
   // during the lockout/expiry dance) that the last check-in stood down;
   // only mail from this point on counts.
@@ -377,6 +382,10 @@ async function silenceToFire() {
   // a code from the fired switch no longer works
   res = await inject(reply(BEN, formatCode(codeW), warn));
   assert(res.action === "repeat" || res.action === "expired" || res.action === "dropped", "post-fire reply does nothing harmful");
+  // an operator code from the fired switch: "no longer running", no reissue
+  res = await inject(reply(OP, formatCode(codeOf(lastCheckin)), lastCheckin));
+  assert(res.action === "expired" && res.switchGone === true && res.reissued === false, "operator code after fire → switch gone, no reissue");
+  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "switch-gone receipt");
   // every non-CRITICAL email was link-free
   for (const m of await readMail()) {
     if (/^CRITICAL:/.test(subj(m))) continue;
@@ -462,8 +471,8 @@ async function upgrade() {
     await deployAndArm();
     await firstContact();
     await periodicAndRestart();
-    await lockoutAndExpiry();
-    await silenceToFire();
+    const lastCheckin = await lockoutAndExpiry();
+    await silenceToFire(lastCheckin);
   }
   log(`SCENARIO ${scenario} PASSED (work dir ${work})`);
   shutdown(0);

@@ -3079,6 +3079,15 @@ async function performCheckin(userEmail, switchData, { via = "dashboard" } = {})
     }
   }
 
+  // Every outstanding check-in/arming code answered the question this
+  // check-in just answered. Retire them all (the one used by a reply was
+  // already marked used by the caller and is untouched here).
+  try {
+    await userService.retireCodes({ userId: switchData.userId, kinds: ["arming", "checkin"] });
+  } catch (error) {
+    console.error(`❌ CODE: Failed to retire outstanding codes for ${userEmail}:`, error);
+  }
+
   armTimers(userEmail, switchData);
 
   if (wasPending) {
@@ -3339,8 +3348,10 @@ async function handleInbound(parsed, meta = {}) {
         }
         return { action: "expired", reason: "switch-gone", kind: live.kind };
       }
-      const result = await performCheckin(live.user_email, switchData, { via: "reply" });
+      // Mark used BEFORE the check-in retires the other outstanding codes,
+      // so this one reads "used" (→ repeat receipt) rather than "retired".
       await userService.markCodeUsed(live.id);
+      const result = await performCheckin(live.user_email, switchData, { via: "reply" });
       if (result.ok && receiptOnce(live.id, "ok")) {
         const due = emailService.dateStamp(new Date(switchData.nextCheckin));
         await emailService.sendReceipt(
@@ -3402,19 +3413,26 @@ async function handleInbound(parsed, meta = {}) {
       }
       return { action: "repeat", kind: stale.kind };
     }
-    // Retired: superseded by a newer email, or cancelled after wrong guesses.
-    const reissued = await reissueFor(stale, { why: "stale code" });
+    // Retired: answered by a later check-in, cancelled after wrong guesses,
+    // or the switch it belonged to has stopped (fired, aborted, re-deployed).
+    const staleSwitch = activeDeadmanSwitches.get(stale.user_email);
+    const switchGone =
+      OPERATOR_KINDS.has(stale.kind) &&
+      (!staleSwitch || (stale.ref && staleSwitch.sessionToken !== stale.ref));
+    const reissued = switchGone ? false : await reissueFor(stale, { why: "stale code" });
     if (receiptOnce(stale.id, "expired")) {
       await emailService.sendReceipt(
         from,
         "That Deploy code has expired",
-        reissued
-          ? "That code has expired — a fresh email with a new code is on its way."
-          : "That code has expired. Please use the code from the most recent email from Deploy.",
+        switchGone
+          ? "That code has expired — the switch it belonged to is no longer running. Log in to your Deploy dashboard to see its state."
+          : reissued
+            ? "That code has expired — a fresh email with a new code is on its way."
+            : "That code has expired. Please use the code from the most recent email from Deploy.",
         threading,
       );
     }
-    return { action: "expired", kind: stale.kind, reissued };
+    return { action: "expired", kind: stale.kind, reissued, switchGone };
   }
 
   // 3. Unknown code. Only a sender who holds a live code is answered at all;
