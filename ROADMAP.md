@@ -51,6 +51,16 @@ automatically with the next version bump.
   outstanding link until the next email goes out; observed live
   2026-09-03.
 
+## Open decisions
+
+- **Receipt volume.** Every successful reply currently gets a one-line
+  receipt ("Deploy check-in received"), which on a shared-mailbox install
+  means three inbox items per cycle (check-in, own reply, receipt). Option
+  on the table: `CHECKIN_RECEIPTS=errors` — silent on a routine success,
+  still "switch armed" once, always the expired / wrong-code /
+  wrong-address receipts and the beneficiary confirmations. Trade-off: a
+  remote operator loses positive confirmation. Eric to decide (2026-09-18).
+
 ## Next up (post-v2.2.0)
 
 - **DKIM/SPF verification of inbound replies** (`mailauth`) — the code is
