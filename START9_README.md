@@ -112,8 +112,8 @@ contain links.
    - Deploy the deadman switch
    - Reply to each check-in email with the code it contains to stay
      active (the first reply arms the switch)
-   - Monitor countdown timers in the dashboard; "Check in now" there is
-     the fallback if email replies stop working
+   - Monitor countdown timers in the dashboard; it shows whether email
+     replies are being received
 
 ## Security Considerations
 

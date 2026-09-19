@@ -442,21 +442,20 @@ ${overdueText}To confirm you are alive, reply to this email with this code:`;
           <hr>
           <p><small>Until you reply, no timers run and nothing will ever be
           sent to your recipients. You will be reminded until the switch is
-          armed. If replying does not work, log in to your Deploy dashboard
-          and use <em>Check in now</em>.</small></p>`
+          armed. Your Deploy dashboard shows whether replies are being
+          received.</small></p>`
         : `<p>Nothing else is needed. The reply can come from any phone or computer.</p>
           <hr>
           <p><small>If you don't respond to check-ins, your deadman switch will
-          activate and send your configured emails. If replying does not
-          work, log in to your Deploy dashboard and use <em>Check in
-          now</em>.</small></p>`;
+          activate and send your configured emails. Your Deploy dashboard
+          shows whether replies are being received.</small></p>`;
       const tailText = arming
         ? `Nothing else is needed. The reply can come from any phone or computer.
 
-Until you reply, no timers run and nothing will ever be sent to your recipients. You will be reminded until the switch is armed. If replying does not work, log in to your Deploy dashboard and use "Check in now".`
+Until you reply, no timers run and nothing will ever be sent to your recipients. You will be reminded until the switch is armed. Your Deploy dashboard shows whether replies are being received.`
         : `Nothing else is needed. The reply can come from any phone or computer.
 
-If you don't respond to check-ins, your deadman switch will activate and send your configured emails. If replying does not work, log in to your Deploy dashboard and use "Check in now".`;
+If you don't respond to check-ins, your deadman switch will activate and send your configured emails. Your Deploy dashboard shows whether replies are being received.`;
 
       const mailOptions = {
         from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
@@ -1116,7 +1115,8 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
       : `Deploy has not been able to read its mailbox ${sinceText}${error ? ` (last error: ${error})` : ""}.`;
     const holdHtml = notConfigured
       ? `<p>Your switch keeps running on its normal schedule. Until this is
-         fixed, the dashboard is the only way to check in.</p>`
+         fixed there is no way to check in: configure IMAP, or abort the
+         switch from the dashboard.</p>`
       : capExpired
         ? `<p><strong>The 7-day safety hold has run out.</strong> The switch has
            resumed its normal timing: if you do not check in, the warning and
@@ -1124,28 +1124,28 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
         : `<p>As a safety measure, the pre-fire warning and the trigger are
            <strong>held</strong> while this lasts (for at most 7 days), so the
            switch cannot fire on a reply it could not read. Missed check-ins
-           are still being counted.</p>`;
+           are still being counted. Fix the mail settings, or abort the switch
+           from the dashboard, before the hold runs out.</p>`;
     const holdText = notConfigured
-      ? `Your switch keeps running on its normal schedule. Until this is fixed, the dashboard is the only way to check in.`
+      ? `Your switch keeps running on its normal schedule. Until this is fixed there is no way to check in: configure IMAP, or abort the switch from the dashboard.`
       : capExpired
         ? `THE 7-DAY SAFETY HOLD HAS RUN OUT. The switch has resumed its normal timing: if you do not check in, the warning and the trigger will now go out on schedule.`
-        : `As a safety measure, the pre-fire warning and the trigger are HELD while this lasts (for at most 7 days), so the switch cannot fire on a reply it could not read. Missed check-ins are still being counted.`;
+        : `As a safety measure, the pre-fire warning and the trigger are HELD while this lasts (for at most 7 days), so the switch cannot fire on a reply it could not read. Missed check-ins are still being counted. Fix the mail settings, or abort the switch from the dashboard, before the hold runs out.`;
 
     return this.sendAlertEmail(
       operatorEmail,
       `WARNING: your Deploy replies are not being received — ${dateStamp()}`,
       `<h2>Your check-in replies are not being received</h2>
        ${whyHtml}
-       <p><strong>Check in from the dashboard ("Check in now") and fix the
-       mail settings.</strong> Replying to check-in emails will not work until
-       this is resolved.</p>
+       <p><strong>Fix the mail settings, or abort the switch.</strong>
+       Replying to check-in emails will not work until this is resolved.</p>
        ${holdHtml}
        <p><small>This alert repeats daily while the problem persists. Automated message from Deploy Deadman Switch.</small></p>`,
       `Your check-in replies are not being received
 
 ${whyText}
 
-CHECK IN FROM THE DASHBOARD ("Check in now") AND FIX THE MAIL SETTINGS. Replying to check-in emails will not work until this is resolved.
+FIX THE MAIL SETTINGS, OR ABORT THE SWITCH. Replying to check-in emails will not work until this is resolved.
 
 ${holdText}
 

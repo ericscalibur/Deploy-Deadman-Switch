@@ -711,18 +711,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!st.enabled) {
       el.classList.add("inbound-warn");
       text =
-        "Email replies: disabled (REPLY_BY_EMAIL=false) — check-in emails cannot be answered; use Check in now.";
+        "Email replies: disabled (REPLY_BY_EMAIL=false) — check-in emails cannot be answered.";
     } else if (!st.configured) {
       el.classList.add(deadmanSwitchActivated ? "inbound-error" : "inbound-warn");
       text =
         "Email replies: not configured — replies to check-in emails cannot be received" +
-        (deadmanSwitchActivated ? "; remote check-ins are NOT working — use this button." : ". Configure IMAP before deploying.");
+        (deadmanSwitchActivated ? "; check-ins are NOT working — configure IMAP or abort the switch." : ". Configure IMAP before deploying.");
     } else if (st.downSince) {
       el.classList.add("inbound-error");
       text =
         `Email replies: error since ${formatUtcDateTime(st.downSince)}` +
         (st.error ? ` (${st.error})` : "") +
-        " — remote check-ins are NOT working; use this button." +
+        " — check-ins are NOT working; fix the mail settings or abort the switch." +
         (inboundHoldActive
           ? ` The warning and the trigger are held while this lasts (up to ${st.holdCapDays || 7} days).`
           : "");
@@ -736,50 +736,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (st.testHooks) text += " (sandbox test hooks on)";
     el.textContent = text;
-  }
-
-  // ---- Dashboard check-in (v2.2.0) ----------------------------------------
-  const checkinNowButton = document.getElementById("checkin-now-button");
-  const checkinNowContainer = document.getElementById("checkin-now-container");
-
-  function renderCheckinNow() {
-    if (!checkinNowContainer) return;
-    checkinNowContainer.style.display =
-      deadmanSwitchActivated && !deadmanSwitchFired ? "block" : "none";
-    if (checkinNowButton) {
-      checkinNowButton.textContent = deadmanSwitchPending
-        ? "Arm now from the dashboard"
-        : "Check in now";
-    }
-  }
-
-  if (checkinNowButton) {
-    checkinNowButton.addEventListener("click", async () => {
-      const confirmed = confirm(
-        deadmanSwitchPending
-          ? "Arm the switch from the dashboard?\n\nThis skips the email dry run: nothing will have proven that Deploy can read your replies. Prefer replying to the check-in email unless email is broken."
-          : "Record a check-in now? Both timers will be reset.",
-      );
-      if (!confirmed) return;
-      checkinNowButton.disabled = true;
-      try {
-        const response = await fetch("/deadman/checkin", {
-          method: "POST",
-          credentials: "include",
-        });
-        const data = await response.json().catch(() => ({}));
-        if (response.ok) {
-          alert(data.message || "Check-in recorded.");
-        } else {
-          alert(data.message || "Check-in failed");
-        }
-      } catch (error) {
-        alert("Check-in failed");
-      } finally {
-        checkinNowButton.disabled = false;
-        syncWithBackend();
-      }
-    });
   }
 
   // Function to get interval in milliseconds based on user selection
@@ -925,8 +881,6 @@ document.addEventListener("DOMContentLoaded", async () => {
               : "");
       }
     }
-
-    renderCheckinNow();
   }
 
   // Function to sync with backend timer status
@@ -999,7 +953,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           }
         }
         renderInboundStatus();
-        renderCheckinNow();
       } else if (response.status === 401 || response.status === 403) {
         // The JWT expired (24h). Without this, the page silently keeps
         // rendering stale local countdowns while every sync fails — the

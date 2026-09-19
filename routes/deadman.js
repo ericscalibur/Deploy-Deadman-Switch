@@ -772,8 +772,8 @@ function maybeSendInboundDownAlert(userEmail, switchData, hold = {}) {
     );
   notify(
     notConfigured
-      ? `Deploy has no IMAP settings, so replies to ${userEmail}'s check-in emails cannot be received. Check in from the dashboard and configure IMAP.`
-      : `Deploy cannot read its mailbox (since ${hold.downSince || st.downSince}). ${userEmail}'s replies are NOT being received${hold.capExpired ? " — the 7-day safety hold has run out and normal timing has resumed" : " — the warning and the fire are held for up to 7 days"}. Check in from the dashboard and fix the IMAP settings.`,
+      ? `Deploy has no IMAP settings, so replies to ${userEmail}'s check-in emails cannot be received. Configure IMAP, or abort the switch from the dashboard.`
+      : `Deploy cannot read its mailbox (since ${hold.downSince || st.downSince}). ${userEmail}'s replies are NOT being received${hold.capExpired ? " — the 7-day safety hold has run out and normal timing has resumed" : " — the warning and the fire are held for up to 7 days"}. Fix the IMAP settings, or abort the switch from the dashboard.`,
     { priority: "urgent", tags: "rotating_light,mailbox" },
   );
   return true;
@@ -2042,7 +2042,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
     });
 
     // No countdown timers yet — the switch holds in pending, re-sending the
-    // arming email each interval. The real timers are created in /checkin
+    // arming email each interval. The real timers are created in performCheckin()
     // when the operator completes this first check-in (that handler already
     // rebuilds both timers from scratch on every check-in).
     startPendingReminders(userEmail, switchData, checkinIntervalMs);
@@ -2054,7 +2054,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
     userEmails.set(userEmail, emails);
 
     // No timer-state save here: a pending session keeps expires_at NULL —
-    // that IS the persisted pending marker. /checkin writes the first real
+    // that IS the persisted pending marker. performCheckin() writes the first real
     // deadline when the switch arms.
 
     // Persist a SECRET_KEY-encrypted copy of the delivery envelope so the switch
@@ -2080,7 +2080,7 @@ router.post("/activate", authenticateToken, async (req, res) => {
     // operator may never complete it. Contacting beneficiaries at this
     // point tells third parties they are named in a switch that may never
     // exist, and that cannot be taken back. First contact happens when the
-    // switch actually arms, in /checkin.
+    // switch actually arms, in performCheckin().
 
     // Arming dry run: the first check-in email goes out right now. Awaited
     // so the response can say honestly whether it was sent — if it wasn't,
@@ -3053,12 +3053,14 @@ function startRecoveredTimers(userEmail, switchData, checkinIntervalMs, delayMs)
 
 // ---- Check-in (v2.2.0: one implementation, two callers) ----
 //
-// The operator proved they are alive: by replying with the code (the
-// poller, via "reply") or from the dashboard button (via "dashboard").
-// Completing the first check-in of a pending switch is the arming event —
-// the round trip just proved itself — and first contact with beneficiaries
-// happens here, never at deploy.
-async function performCheckin(userEmail, switchData, { via = "dashboard" } = {}) {
+// The operator proved they are alive by replying with the code (the poller,
+// via "reply"). There is deliberately no dashboard check-in: one path, so
+// the reply path is exercised every time and a broken one is noticed. If
+// mail is broken the answer is to fix it or abort, and the inbound
+// fail-safe holds the fire meanwhile. Completing the first check-in of a
+// pending switch is the arming event — the round trip just proved itself —
+// and first contact with beneficiaries happens here, never at deploy.
+async function performCheckin(userEmail, switchData, { via = "reply" } = {}) {
   if (!switchData || activeDeadmanSwitches.get(userEmail) !== switchData) {
     return { ok: false, reason: "no-switch" };
   }
@@ -3086,8 +3088,8 @@ async function performCheckin(userEmail, switchData, { via = "dashboard" } = {})
   }
 
   // Every outstanding check-in/arming code answered the question this
-  // check-in just answered. Retire them all (the one used by a reply was
-  // already marked used by the caller and is untouched here).
+  // check-in just answered. Retire them all (the one used was already
+  // marked used by the caller and is untouched here).
   try {
     await userService.retireCodes({ userId: switchData.userId, kinds: ["arming", "checkin"] });
   } catch (error) {
@@ -3134,38 +3136,6 @@ async function performCheckin(userEmail, switchData, { via = "dashboard" } = {})
 
   return { ok: true, wasPending };
 }
-
-// Dashboard check-in — the operator's fallback when email is broken, and
-// the only remote-free path. Arms a pending switch too (the spec makes the
-// button and the poller equivalent), so the frontend warns that arming
-// this way skips the email dry run.
-router.post("/checkin", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const switchData = activeDeadmanSwitches.get(userEmail);
-    if (!switchData) {
-      return res.status(400).json({ message: "No active deadman switch found for this user" });
-    }
-    const result = await performCheckin(userEmail, switchData, { via: "dashboard" });
-    if (!result.ok) {
-      return res.status(400).json({ message: "Check-in could not be recorded" });
-    }
-    res.json({
-      success: true,
-      wasPending: result.wasPending,
-      via: "dashboard",
-      lastActivity: switchData.lastActivity,
-      nextCheckin: switchData.nextCheckin,
-      deadmanActivation: switchData.deadmanActivation,
-      message: result.wasPending
-        ? "Switch armed from the dashboard. The countdown is now running. Note: the email round trip has not been proven — reply to the next check-in email to be sure."
-        : "Check-in recorded. Your timers have been reset.",
-    });
-  } catch (error) {
-    console.error("Error processing dashboard check-in:", error);
-    res.status(500).json({ message: "Failed to record check-in" });
-  }
-});
 
 // ---- Beneficiary acknowledgement (v2.2.0: by reply code) ----
 //
@@ -3328,11 +3298,10 @@ async function handleInbound(parsed, meta = {}) {
         `🚫 INBOUND: ${live.kind} code for user ${live.user_id} arrived from ${from}, not the address it was sent to — rejected`,
       );
       if (original && receiptOnce(live.id, "mismatch")) {
-        const isOperator = OPERATOR_KINDS.has(live.kind);
         await emailService.sendReceipt(
           original,
           "A reply with your Deploy code was not accepted",
-          `A reply with your code arrived from ${from} and was not accepted. Reply from ${original}${isOperator ? ", or check in from the dashboard" : ""}.`,
+          `A reply with your code arrived from ${from} and was not accepted. Reply from ${original}.`,
         );
       }
       return { action: "rejected", reason: "from-mismatch", kind: live.kind };

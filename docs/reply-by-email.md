@@ -26,10 +26,14 @@ everywhere, in both directions. Make it the **only** remote path:
 - The "I'm Active" button, the check-in URL and the ack URL are removed
   from all emails. `APP_URL` no longer appears in any email; it is only
   where the dashboard lives.
-- The operator's fallback when email is broken is the dashboard's own
-  "Check in now" button, reachable at home (LAN / onion). Nothing else.
+- **Amended 2026-09-18 after the live pass:** there is no dashboard
+  "Check in now" button. The only utility it had — staying armed past the
+  fail-safe's 7-day hold without fixing IMAP — is the situation in which
+  the switch should not be running; and a habit of dashboard check-ins
+  would leave a broken reply path unnoticed for months. Broken mail means
+  fix it or abort; the fail-safe holds the fire meanwhile.
 
-One path for remote users, one for the operator at home. No "or".
+One path. No "or".
 
 ## The code
 

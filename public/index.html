@@ -56,9 +56,10 @@
                 service. Here’s how it works. You will receive a Check-In at
                 regular Intervals. When you receive the email, reply to it with
                 the short code it contains — that reply, from any phone or
-                computer, is what resets the timer. Emails contain no links.
-                If replying ever stops working, the <em>Check in now</em>
-                button on this page is your fallback. If the Period of
+                computer, is what resets the timer. Emails contain no links,
+                and there is no other way to check in: if replying ever stops
+                working, this page will say so, and the switch should be
+                aborted until mail is fixed. If the Period of
                 Inactivity elapses without a check-in, the Deadman Switch will
                 activate and your emails will be sent. All your data is
                 encrypted until the final emails are sent. You can send up to
@@ -189,16 +190,10 @@
                 </div>
 
                 <!-- Whether Deploy can read the replies to its own emails.
-                     Red when it cannot: remote check-ins are then NOT
-                     working and the button below is the only path. -->
+                     Red when it cannot: check-ins are then NOT working;
+                     fix the mail settings or abort. -->
                 <div id="inbound-status" class="inbound-status" style="display: none"></div>
 
-                <!-- The operator's fallback when email is broken, reachable
-                     at home (LAN / onion). Shown only while a switch exists. -->
-                <div class="checkin-now-container" id="checkin-now-container" style="display: none">
-                    <button id="checkin-now-button" type="button">Check in now</button>
-                    <small id="checkin-now-hint">Use this if replying to the check-in email is not possible.</small>
-                </div>
             </div>
 
             <div id="emails-section">

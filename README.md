@@ -54,11 +54,12 @@ operator's vacation responder cannot keep the switch alive. Each code works
 once; five wrong guesses cancel it and a fresh email is sent. Replies get a
 one-line receipt ("Check-in received at 14:02 UTC — next check-in due …").
 
-If email replies ever stop working, the dashboard's **Check in now** button
-is your fallback, reachable at home (LAN or onion). While Deploy knows it
+There is no other way to check in — deliberately, so the reply path is
+exercised every time and a broken one is noticed. While Deploy knows it
 cannot read its mailbox it emails you daily, shows a red banner, and holds
 the pre-fire warning and the trigger for up to 7 days rather than fire on a
-reply it could not read.
+reply it could not read. If mail cannot be fixed in that time, abort the
+switch; a switch whose mail is broken should not be running.
 
 ### Changing recipients while the switch is armed
 
@@ -292,7 +293,6 @@ sender — delivery always wins over sender hygiene.
 - `GET /deadman/timer-status` - Get current timer status (includes missed
   check-in count, warning state, how the last check-in arrived, and the
   email-reply connection status)
-- `POST /deadman/checkin` - Dashboard check-in (the at-home fallback)
 - `GET /deadman/inbound-status` - Email-reply (IMAP) connection status
 
 Check-ins and recipient acknowledgements arrive as email replies carrying a

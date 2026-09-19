@@ -468,34 +468,6 @@ body {
     font-weight: bold;
 }
 
-/* Dashboard check-in button — v2.2.0 */
-.checkin-now-container {
-    margin-top: 14px;
-    text-align: center;
-}
-.checkin-now-container small {
-    display: block;
-    margin-top: 6px;
-    color: #666;
-}
-#checkin-now-button {
-    background-color: #2f6fdb;
-    color: white;
-    padding: 12px 26px;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: bold;
-}
-#checkin-now-button:hover {
-    background-color: #245ab8;
-}
-#checkin-now-button:disabled {
-    opacity: 0.6;
-    cursor: default;
-}
-
 /* Settings button container */
 .settings-button-container {
     margin-top: 30px;
