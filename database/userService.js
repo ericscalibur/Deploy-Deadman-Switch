@@ -637,6 +637,18 @@ class UserService {
     });
   }
 
+  // A cheap change stamp over this operator's ping rows, so the dashboard
+  // can refetch the per-recipient status (which carries the password over
+  // Tor) only when something actually changed.
+  async getBeneficiaryStamp(userId) {
+    const row = await this._get(
+      `SELECT COUNT(*) AS n, MAX(ping_sent_at) AS s, MAX(ack_at) AS a, MAX(operator_alerted_at) AS o
+         FROM beneficiary_pings WHERE user_id = ?`,
+      [userId],
+    );
+    return row ? `${row.n}|${row.s || ""}|${row.a || ""}|${row.o || ""}` : "";
+  }
+
   // Remember that the operator was already alerted about this unacked ping
   // so the daily sweep doesn't re-alert every day.
   async markPingOperatorAlerted(pingId) {

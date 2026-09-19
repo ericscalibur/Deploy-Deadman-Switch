@@ -1764,6 +1764,10 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
   try {
     const userEmail = req.user.email;
     console.log(`🔍 TIMER-STATUS: Request from ${userEmail}`);
+    let beneficiaryStamp = "";
+    try {
+      beneficiaryStamp = await userService.getBeneficiaryStamp(req.user.userId);
+    } catch (_) {}
 
     // Check if deadman switch is active for this user
     if (activeDeadmanSwitches.has(userEmail)) {
@@ -1799,6 +1803,7 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
         lastCheckinAt: switchData.lastCheckinAt || null,
         inbound: inboundStatus(),
         inboundHold: inboundHold(switchData).held,
+        beneficiaryStamp,
         settings: {
           checkinInterval: switchData.settings.checkinInterval,
           inactivityPeriod: switchData.settings.inactivityPeriod,
@@ -1810,6 +1815,7 @@ router.get("/timer-status", authenticateToken, async (req, res) => {
         success: true,
         active: false,
         inbound: inboundStatus(),
+        beneficiaryStamp,
       });
     }
   } catch (error) {

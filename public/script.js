@@ -496,6 +496,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   // actually changed.
   let renderedEmailsSignature = null;
   let lastStatusFetch = 0;
+  // Change stamp of the server's ping table, carried on /timer-status. When
+  // it moves (a recipient replied, a ping went out) the status line is
+  // refetched at once instead of waiting out the minute.
+  let lastBeneficiaryStamp = null;
 
   function emailsSignature(emails) {
     return JSON.stringify(
@@ -943,6 +947,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         // dashboard needs no extra round trip over Tor.
         inboundState = data.inbound || null;
         inboundHoldActive = !!data.inboundHold;
+
+        if (typeof data.beneficiaryStamp === "string" && data.beneficiaryStamp !== lastBeneficiaryStamp) {
+          const first = lastBeneficiaryStamp === null;
+          lastBeneficiaryStamp = data.beneficiaryStamp;
+          if (!first) {
+            lastStatusFetch = Date.now();
+            loadBeneficiaryStatus();
+          }
+        }
 
         if (data.active) {
           // Update frontend with backend data
