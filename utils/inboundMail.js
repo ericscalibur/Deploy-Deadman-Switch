@@ -391,8 +391,13 @@ class InboundMail {
         console.log(`📥 IMAP: cursor for ${folder} set to UID ${lastUid} (UIDVALIDITY ${validity})`);
         return;
       }
-      if (uidNext > 0 && uidNext - 1 <= lastUid) return; // nothing new
-
+      // No "nothing new" shortcut on uidNext here: ImapFlow refreshes it
+      // only when a folder is freshly SELECTed, not on the untagged EXISTS
+      // that IDLE delivers, so a sync woken by a push saw a stale value,
+      // skipped INBOX, and the reply waited for the next poll (seen live:
+      // 20 s and 75 s delays). Fetching from the cursor is one small
+      // header fetch; when nothing is new the server returns the last
+      // message, which the uid guard below drops.
       const metas = [];
       for await (const msg of client.fetch(
         `${lastUid + 1}:*`,
