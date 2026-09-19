@@ -6,6 +6,15 @@
 const MAX_CHECKIN_MS = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weeks
 const MAX_INACTIVITY_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 
+// Floors (v2.2.2). 3-minute check-ins with a 9-minute deadline is the
+// smallest configuration that lets a real end-to-end test run — deploy,
+// arm by reply, answer a check-in, see the warning and the trigger — with
+// enough room for mail delivery on each step; anything tighter races the
+// mail. The sandbox harness (DEPLOY_TEST_HOOKS=1) may go down to 1 / 3.
+const SANDBOX = process.env.DEPLOY_TEST_HOOKS === "1";
+const MIN_CHECKIN_MS = (SANDBOX ? 1 : 3) * 60 * 1000;
+const MIN_INACTIVITY_MS = (SANDBOX ? 3 : 9) * 60 * 1000;
+
 const UNIT_MS = {
   minute: 60 * 1000,
   minutes: 60 * 1000,
@@ -27,8 +36,6 @@ function getIntervalMs(intervalValue) {
 
   // Handle legacy format for backward compatibility
   switch (intervalValue) {
-    case "1-minute":
-      return 1 * 60 * 1000;
     case "2-hours":
       return 2 * 60 * 60 * 1000;
     case "2-days":
@@ -85,7 +92,7 @@ function getIntervalMs(intervalValue) {
   const ms = value * (multipliers[unit] || multipliers.hours);
 
   // Validation limits for check-in intervals
-  const MIN_INTERVAL = 1 * 60 * 1000; // 1 minute minimum
+  const MIN_INTERVAL = MIN_CHECKIN_MS;
   const MAX_INTERVAL = MAX_CHECKIN_MS; // 4 weeks maximum
 
   if (ms < MIN_INTERVAL || ms > MAX_INTERVAL) {
@@ -101,8 +108,6 @@ function getInactivityMs(periodValue) {
 
   // Handle legacy format for backward compatibility
   switch (periodValue) {
-    case "2-minutes":
-      return 2 * 60 * 1000;
     case "12-hours":
       return 12 * 60 * 60 * 1000;
     case "1-day":
@@ -162,7 +167,7 @@ function getInactivityMs(periodValue) {
   const ms = value * (multipliers[unit] || multipliers.days);
 
   // Validation limits for inactivity periods
-  const MIN_INACTIVITY = 1 * 60 * 1000; // 1 minute minimum
+  const MIN_INACTIVITY = MIN_INACTIVITY_MS;
   // One calendar year. Expressed in days so that every way the UI lets a
   // user say "a year" (365 days, 52 weeks, 12 months) lands inside the range.
   const MAX_INACTIVITY = MAX_INACTIVITY_MS;
@@ -238,8 +243,20 @@ function validateTimeInterval(intervalValue, isInactivityPeriod = false) {
     };
   }
 
-  // Check the absolute ceiling the parser will actually honour.
+  // Check the floor and the ceiling the parser will actually honour.
   const ms = value * UNIT_MS[unit];
+  if (!isInactivityPeriod && ms < MIN_CHECKIN_MS) {
+    return {
+      isValid: false,
+      error: `Check-in interval cannot be shorter than ${MIN_CHECKIN_MS / 60000} minutes. You entered ${value} ${constraint.name}.`,
+    };
+  }
+  if (isInactivityPeriod && ms < MIN_INACTIVITY_MS) {
+    return {
+      isValid: false,
+      error: `Inactivity period cannot be shorter than ${MIN_INACTIVITY_MS / 60000} minutes. You entered ${value} ${constraint.name}.`,
+    };
+  }
   if (!isInactivityPeriod && ms > MAX_CHECKIN_MS) {
     return {
       isValid: false,
@@ -300,6 +317,10 @@ function getInactivityName(ms) {
 }
 
 module.exports = {
+  MIN_CHECKIN_MS,
+  MIN_INACTIVITY_MS,
+  MAX_CHECKIN_MS,
+  MAX_INACTIVITY_MS,
   MAX_CHECKIN_MS,
   MAX_INACTIVITY_MS,
   getIntervalMs,

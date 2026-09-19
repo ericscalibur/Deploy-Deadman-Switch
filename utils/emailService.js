@@ -865,8 +865,8 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     const op = esc(operatorEmail);
 
     const subject = firstContact
-      ? `${operatorEmail} listed you as a trusted contact — one reply required`
-      : `Annual contact check for ${operatorEmail} — one reply required`;
+      ? `${operatorEmail} listed you as a trusted contact — please reply to confirm`
+      : `Annual contact check for ${operatorEmail} — please reply to confirm`;
 
     const codeHtml = codeBlockHtml(code);
     const codeText = codeBlockText(code);

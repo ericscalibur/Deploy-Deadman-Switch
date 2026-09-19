@@ -1134,18 +1134,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Value constraints for different units. These mirror the server's hard
-  // ceilings (utils/timeUtils.js): check-ins up to 4 weeks, inactivity up to
-  // one year. Anything beyond is rejected server-side, so clamp it here
-  // before the operator ever sees a confusing error.
+  // floors and ceilings (utils/timeUtils.js): check-ins from 3 minutes to 4
+  // weeks, inactivity from 9 minutes to one year. Anything outside is
+  // rejected server-side, so clamp it here before the operator ever sees a
+  // confusing error. 3 / 9 minutes is the smallest real end-to-end test.
   const inactivityConstraints = {
-    minutes: { max: 60, name: "minutes" },
+    minutes: { min: 9, max: 60, name: "minutes" },
     hours: { max: 24, name: "hours" },
     days: { max: 365, name: "days" },
     weeks: { max: 52, name: "weeks" },
     months: { max: 12, name: "months" },
   };
   const checkinConstraints = {
-    minutes: { max: 60, name: "minutes" },
+    minutes: { min: 3, max: 60, name: "minutes" },
     hours: { max: 24, name: "hours" },
     days: { max: 28, name: "days" },
     weeks: { max: 4, name: "weeks" },
@@ -1161,9 +1162,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         : inactivityConstraints;
     const constraint = unitConstraints[unit];
 
-    // Update max attribute dynamically based on selected unit
+    // Update min/max attributes dynamically based on selected unit
+    const minimum = (constraint && constraint.min) || 1;
     if (constraint) {
       inputElement.setAttribute("max", constraint.max);
+      inputElement.setAttribute("min", minimum);
 
       if (value > constraint.max) {
         alert(
@@ -1173,9 +1176,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
-    if (value < 1) {
-      alert("Minimum value is 1. Setting to minimum.");
-      inputElement.value = 1;
+    if (value < minimum) {
+      alert(
+        minimum > 1
+          ? `Minimum for ${constraint.name} is ${minimum} — the smallest setting that leaves room for a real test. Setting to minimum.`
+          : "Minimum value is 1. Setting to minimum.",
+      );
+      inputElement.value = minimum;
     }
   }
 

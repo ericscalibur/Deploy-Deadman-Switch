@@ -216,7 +216,7 @@ describe("extractCode", () => {
       "Deploy check-in — 18 Sep 2026 14:01 UTC",
       "URGENT: Deploy check-in overdue — 2 unanswered — 18 Sep 2026 14:01 UTC",
       "Confirm your first check-in to arm your Deploy switch — 18 Sep 2026 14:01 UTC",
-      "op@example.com listed you as a trusted contact — one reply required",
+      "op@example.com listed you as a trusted contact — please reply to confirm",
       "URGENT: op@example.com has stopped responding — action needed (reminder)",
       "WARNING: your Deploy replies are not being received — 18 Sep 2026 14:01 UTC",
     ]) {

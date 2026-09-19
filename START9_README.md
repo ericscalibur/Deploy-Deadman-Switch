@@ -104,9 +104,11 @@ contain links.
 
 2. **Configure Deadman Switch**
    - Add recipient email addresses
-   - Set check-in frequency (1 minute to 2 weeks)
-   - Set inactivity period (3 minutes to 9 months)
-   - Test with short intervals first
+   - Set check-in frequency (3 minutes to 4 weeks)
+   - Set inactivity period (9 minutes to 1 year)
+   - Run one full test at 3 / 9 minutes first: deploy, reply to arm,
+     reply to a check-in, then stay silent through the warning and the
+     trigger
 
 3. **Activate**
    - Deploy the deadman switch

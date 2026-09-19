@@ -284,7 +284,7 @@ async function deployAndArm() {
 async function firstContact() {
   const ping = await waitMail((m) => to(m) === BEN && /trusted contact/.test(subj(m)), "first-contact email");
   assertNoLinks(ping);
-  assert(/one reply required/.test(subj(ping)), "first-contact subject says reply");
+  assert(/please reply to confirm/.test(subj(ping)), "first-contact subject says reply");
   const codeB = codeOf(ping);
   // beneficiary's wrong code first → "didn't match"
   let res = await inject(eml({ from: BEN, to: DEPLOY, subject: "Re: " + subj(ping), body: "K7M4-P2XQ" }));

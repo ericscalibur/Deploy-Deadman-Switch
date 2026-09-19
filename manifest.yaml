@@ -1,7 +1,15 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.2.1
+version: 2.2.2
 release-notes: |
+  - (2.2.2) The smallest settings are now a 3-minute check-in and a
+    9-minute period of inactivity, and the dashboard opens by asking you
+    to run one full test at exactly those values before deploying for
+    real: deploy, reply to arm, reply to a check-in, then stay silent and
+    watch the warning and the trigger arrive. Anything tighter races the
+    mail and tests nothing.
+  - The first-contact and annual address-check emails to beneficiaries now
+    end "— please reply to confirm" instead of "— one reply required".
   - (2.2.1) The dashboard's "Email replies" line is folded into the Last
     activity line as "Reply mailbox: connected, checked <time>". It reports
     whether Deploy can read the replies to its own emails — check-ins and

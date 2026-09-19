@@ -22,7 +22,7 @@ describe("getIntervalMs", () => {
   });
 
   test("handles legacy format", () => {
-    assert.equal(getIntervalMs("1-minute"), MIN);
+    assert.equal(getIntervalMs("3-minutes"), 3 * MIN);
     assert.equal(getIntervalMs("2-hours"), 2 * HOUR);
     assert.equal(getIntervalMs("2-days"), 2 * DAY);
     assert.equal(getIntervalMs("2-weeks"), 2 * WEEK);
@@ -38,6 +38,8 @@ describe("getIntervalMs", () => {
   test("returns default for out-of-range values", () => {
     assert.equal(getIntervalMs("100-minutes"), 2 * HOUR); // exceeds max 60
     assert.equal(getIntervalMs("999-hours"), 2 * HOUR);   // exceeds max 24
+    assert.equal(getIntervalMs("1-minute"), 2 * HOUR);    // below the 3-minute floor
+    assert.equal(getIntervalMs("2-minutes"), 2 * HOUR);
   });
 
   test("returns default for invalid format", () => {
@@ -60,7 +62,8 @@ describe("getInactivityMs", () => {
   });
 
   test("handles legacy format", () => {
-    assert.equal(getInactivityMs("2-minutes"), 2 * MIN);
+    assert.equal(getInactivityMs("9-minutes"), 9 * MIN);
+    assert.equal(getInactivityMs("2-minutes"), DAY); // below the 9-minute floor
     assert.equal(getInactivityMs("12-hours"), 12 * HOUR);
     assert.equal(getInactivityMs("1-day"), DAY);
     assert.equal(getInactivityMs("3-days"), 3 * DAY);
@@ -149,6 +152,17 @@ describe("validateTimeInterval", () => {
     const r = validateTimeInterval("25-hours");
     assert.equal(r.isValid, false);
     assert.match(r.error, /Maximum value/);
+  });
+
+  test("rejects intervals below the floors, matching the parsers", () => {
+    let r = validateTimeInterval("2-minutes");
+    assert.equal(r.isValid, false);
+    assert.match(r.error, /shorter than 3 minutes/);
+    assert.equal(validateTimeInterval("3-minutes").isValid, true);
+    r = validateTimeInterval("8-minutes", true);
+    assert.equal(r.isValid, false);
+    assert.match(r.error, /shorter than 9 minutes/);
+    assert.equal(validateTimeInterval("9-minutes", true).isValid, true);
   });
 
   test("accepts valid intervals", () => {

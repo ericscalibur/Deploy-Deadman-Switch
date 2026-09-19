@@ -230,8 +230,13 @@ deployed).
   job is to work when that machine's operator is gone.
 
 ### Timer Configuration
-- **Check-in Intervals**: 1 minute to 2 weeks
-- **Deadman Timer**: 3 minutes to 9 months
+- **Check-in Intervals**: 3 minutes to 4 weeks
+- **Deadman Timer**: 9 minutes to 1 year (and always longer than the
+  check-in interval)
+
+Before relying on a switch, run one full test at the minimum — 3-minute
+check-ins, 9-minute inactivity: deploy, reply to arm, reply to a check-in,
+then stay silent and watch the warning and the trigger arrive.
 
 ### Beneficiary Escalation (v2.0.0)
 

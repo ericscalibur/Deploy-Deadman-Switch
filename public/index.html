@@ -52,6 +52,13 @@
                 <button id="logout-button">Logout</button>
             </div>
             <p>
+                &nbsp;&nbsp;&nbsp;&nbsp;Before you deploy for real, run one
+                full test with a 3-minute check-in and a 9-minute period of
+                inactivity (the smallest values allowed): deploy, reply to arm,
+                reply to a check-in, then stay silent and watch the warning and
+                the trigger arrive. Twelve minutes now is worth more than any
+                amount of reading.
+                <br /><br />
                 &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
                 service. Here’s how it works. You will receive a Check-In at
                 regular intervals. When you receive the email, reply to it with
@@ -96,7 +103,7 @@
                             type="number"
                             id="checkin-value"
                             name="checkin-value"
-                            min="1"
+                            min="3"
                             max="24"
                             value="2"
                             required
