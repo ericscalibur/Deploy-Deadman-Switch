@@ -178,8 +178,30 @@ Spec: `docs/reply-by-email.md` (read it first, all of it). Invariants:
 - [x] Restart mid-cycle; inject a reply after restart → processed once.
 - [x] Fail-safe: simulate down_since across a warning tick → held + alert
       email; clear → resumes.
-- [ ] Live: real Gmail, phone off the LAN, Gmail app + Apple Mail +
+- [x] Live: real Gmail, phone off the LAN, Gmail app + Apple Mail +
       Outlook mobile, one arming and one check-in each.
 - [ ] Release: push → make build → start-sdk pack → start-cli s9pk convert
       → verify layers (grep `inboundMail`, no `deadman/checkin/`) →
       sideload → tag → sign → release.
+
+## Live pass record (2026-09-18/19, Eric's Gmail, Proton beneficiaries)
+
+Two full cycles on a local server against the real account (shared
+mailbox: Deploy sends from the operator's own Gmail). Second cycle at
+3-min / 9-min after the fixes below: arming by reply, first contact →
+Proton ack (HTML-only client), routine check-in by reply, reply to the
+OLDER of two outstanding check-in emails accepted, pre-fire warning →
+Proton warning-ack by reply, stand-down after a late check-in, CRITICAL
+delivered 1/1 at the deadline, dying-gasp tick skipped, session closed,
+post-fire replies answered "switch no longer running". Every code kind
+has a live sample; every reply was processed on the IDLE push.
+
+Found and fixed during the pass: (1) retire-on-issue turned a reply that
+crossed a tick into "expired" and fired the switch on a living operator —
+outstanding operator codes now stay live until a check-in; (2) a push
+arriving mid-sync was dropped; (3) a push-woken sync compared the cursor
+against ImapFlow's stale uidNext and skipped INBOX; (4) the recipient
+status line refreshed at most once a minute; (5) the dashboard check-in
+button was removed at Eric's call. "Phone off the LAN" is moot for
+reply-by-email: the reply never touches the server's address.
+
