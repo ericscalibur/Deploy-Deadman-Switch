@@ -28,7 +28,10 @@ const { ImapFlow } = require("imapflow");
 const { simpleParser } = require("mailparser");
 const { notify, notifyThrottled, clearThrottle } = require("./notify");
 
-const POLL_MS = parseInt(process.env.IMAP_POLL_MS, 10) || 60 * 1000;
+// Fallback poll. IDLE normally wakes the reader within seconds of a reply;
+// this is the ceiling when a push is missed (Gmail's IDLE is best-effort).
+// A NOOP/SELECT every 20 s costs nothing the server notices.
+const POLL_MS = parseInt(process.env.IMAP_POLL_MS, 10) || 20 * 1000;
 const RECONNECT_MIN_MS = 15 * 1000;
 const RECONNECT_MAX_MS = 10 * 60 * 1000;
 const VERIFY_THROTTLE_MS = 60 * 1000;
@@ -115,6 +118,9 @@ class InboundMail {
     this._lastVerifyResult = null;
     this._wake = null;
     this._syncing = null;
+    // A push that arrives while a sync is already running must not be
+    // lost — it is answered by one more sync as soon as this one ends.
+    this._pokePending = false;
   }
 
   getState() {
@@ -214,9 +220,11 @@ class InboundMail {
     await this.start({ store, onMessage });
   }
 
-  // Ask the loop to sync now (test aid / after a config change).
+  // Ask the loop to sync now: IDLE said new mail exists, or a config
+  // change / test wants an immediate pass.
   poke() {
     if (this._wake) this._wake();
+    else this._pokePending = true;
   }
 
   async _closeClient() {
@@ -273,7 +281,10 @@ class InboundMail {
       console.error(`❌ IMAP connection error: ${describeError(err)}`);
     });
     client.on("close", () => closed(new Error("connection closed")));
-    client.on("exists", () => this.poke());
+    client.on("exists", (ev) => {
+      console.log(`📥 IMAP: new mail signalled in ${ev && ev.path ? ev.path : "INBOX"} (IDLE)`);
+      this.poke();
+    });
 
     await client.connect();
     console.log(`📥 IMAP connected: ${cfg.user}@${cfg.host}:${cfg.port}`);
@@ -303,8 +314,11 @@ class InboundMail {
       if (woke instanceof Error) throw woke;
       if (this.stopped || gen !== this.generation) break;
       if (!client.usable) throw new Error("connection no longer usable");
-      await this._syncAll(client, folders);
-      this.state.lastCheckedAt = new Date().toISOString();
+      do {
+        this._pokePending = false;
+        await this._syncAll(client, folders);
+        this.state.lastCheckedAt = new Date().toISOString();
+      } while (this._pokePending && client.usable);
     }
   }
 
