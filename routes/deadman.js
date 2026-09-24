@@ -645,12 +645,17 @@ async function sendWarningTo(userEmail, switchData, addr, isResend) {
     console.error(`❌ CODE: Could not issue a warning-ack code for ${userEmail}'s recipient:`, error);
     return false;
   }
+  // missedCheckins counts intervals of silence including the one that just
+  // elapsed; check-in EMAILS left unanswered is one less (never below 1 —
+  // a warning is only ever sent once at least one went unanswered).
+  const unanswered = Math.max(1, (switchData.missedCheckins || 0) - 1);
   return emailService.sendBeneficiaryWarning(
     addr,
     userEmail,
     daysRemaining,
     code,
     isResend,
+    { unanswered },
   );
 }
 

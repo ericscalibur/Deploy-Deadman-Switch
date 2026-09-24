@@ -45,10 +45,14 @@ let serverLog = "";
 function log(msg) {
   console.log(`\x1b[36m[e2e ${new Date().toISOString().slice(11, 19)}]\x1b[0m ${msg}`);
 }
+const FAILED = Symbol("e2e-failed");
 function fail(msg) {
   console.error(`\x1b[31m[e2e FAIL]\x1b[0m ${msg}`);
   console.error("--- last server log ---\n" + serverLog.split("\n").slice(-60).join("\n"));
-  shutdown(1);
+  // Stop the scenario here; the top-level catch shuts everything down.
+  const e = new Error(String(msg));
+  e[FAILED] = true;
+  throw e;
 }
 function assert(cond, msg) {
   if (!cond) fail(msg);
@@ -368,6 +372,8 @@ async function silenceToFire(lastCheckin) {
   const warn = await waitMail((m) => to(m) === BEN && /^URGENT: .*stopped responding/.test(subj(m)), "beneficiary pre-fire warning", 200000);
   assertNoLinks(warn);
   assert(/reply(ing)? to this email/i.test(warn.parsed.text), "warning asks for a reply");
+  assert(!/several/.test(warn.parsed.text), "warning never says 'several'");
+  assert(/has not answered (a|\d+ consecutive) scheduled check-in email/.test(warn.parsed.text), "warning states the real missed count");
   const codeW = codeOf(warn);
   let res = await inject(reply(BEN, formatCode(codeW), warn));
   assert(res.action === "ack" && res.kind === "warning-ack" && res.ok, "warning ack by reply");
@@ -385,7 +391,8 @@ async function silenceToFire(lastCheckin) {
   // an operator code from the fired switch: "no longer running", no reissue
   res = await inject(reply(OP, formatCode(codeOf(lastCheckin)), lastCheckin));
   assert(res.action === "expired" && res.switchGone === true && res.reissued === false, "operator code after fire → switch gone, no reissue");
-  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "switch-gone receipt");
+  // No receipt is expected here: that code already got its one "expired"
+  // receipt earlier in the run (receipts go out at most once per code).
   // every non-CRITICAL email was link-free
   for (const m of await readMail()) {
     if (/^CRITICAL:/.test(subj(m))) continue;
@@ -477,5 +484,8 @@ async function upgrade() {
   log(`SCENARIO ${scenario} PASSED (work dir ${work})`);
   shutdown(0);
 })().catch((e) => {
-  fail(e.stack || String(e));
+  if (!(e && e[FAILED])) {
+    console.error(`\x1b[31m[e2e FAIL]\x1b[0m ${e && e.stack ? e.stack : String(e)}`);
+  }
+  shutdown(1);
 });

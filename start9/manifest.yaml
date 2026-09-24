@@ -1,7 +1,13 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.2.2
+version: 2.2.3
 release-notes: |
+  - (2.2.3) The URGENT warning to beneficiaries now states how many
+    check-in emails actually went unanswered ("has not answered a scheduled
+    check-in email" / "… 3 consecutive scheduled check-in emails") instead
+    of "has missed several scheduled check-ins", which was false — and
+    needlessly alarming — when the warning followed a single missed
+    check-in. Reported by a tester on the v2.2.2 Windows run.
   - (2.2.2) The smallest settings are now a 3-minute check-in and a
     9-minute period of inactivity, and the dashboard opens by asking you
     to run one full test at exactly those values before deploying for

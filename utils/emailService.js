@@ -756,6 +756,7 @@ Print or save this entire email — it contains the encrypted payload needed for
     daysRemaining,
     code,
     isResend = false,
+    { unanswered = 1 } = {},
   ) {
     if (!(await this.ensureReady())) {
       console.error(
@@ -766,6 +767,13 @@ Print or save this entire email — it contains the encrypted payload needed for
 
     const daysText =
       daysRemaining > 0 ? `approximately ${daysRemaining} days` : "very soon";
+    // State the real count. "Several" was false at the threshold — which can
+    // be a single unanswered email — and needlessly alarming (tester report,
+    // 2026-09-24).
+    const missedText =
+      unanswered <= 1
+        ? "has not answered a scheduled check-in email"
+        : `has not answered ${unanswered} consecutive scheduled check-in emails`;
 
     const mailOptions = {
       from: `"Deploy Deadman Switch" <${this._routineFromAddress()}>`,
@@ -777,7 +785,7 @@ Print or save this entire email — it contains the encrypted payload needed for
         <p>You are receiving this because <strong>${operatorEmail}</strong> set up an
         automated "dead man's switch": a system that sends you important
         pre-written information if they stop confirming they are okay.</p>
-        <p><strong>${operatorEmail} has now missed several scheduled check-ins.</strong>
+        <p><strong>${operatorEmail} ${missedText}.</strong>
         If they continue not to respond, this system will automatically send you
         their prepared message in <strong>${daysText}</strong>. That final message
         cannot be cancelled once it is sent.</p>
@@ -803,7 +811,7 @@ Please read this carefully.
 
 You are receiving this because ${operatorEmail} set up an automated "dead man's switch": a system that sends you important pre-written information if they stop confirming they are okay.
 
-${operatorEmail} has now missed several scheduled check-ins. If they continue not to respond, this system will automatically send you their prepared message in ${daysText}. That final message cannot be cancelled once it is sent.
+${operatorEmail} ${missedText}. If they continue not to respond, this system will automatically send you their prepared message in ${daysText}. That final message cannot be cancelled once it is sent.
 
 What you should do now:
 
