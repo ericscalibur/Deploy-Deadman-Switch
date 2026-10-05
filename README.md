@@ -51,7 +51,9 @@ Deploy reads its own mailbox over IMAP to receive those replies. A code
 counts only when it appears outside quoted text and never from an automatic
 reply (out-of-office, helpdesk auto-acknowledgements, bounces), so a dead
 operator's vacation responder cannot keep the switch alive. Each code works
-once; five wrong guesses cancel it and a fresh email is sent. Replies get a
+once. Wrong guesses are answered but never cancel a code — anyone can forge
+a sender address, so a cancellation rule would let someone else lock you
+out of your own check-ins. Replies get a
 one-line receipt ("Check-in received at 14:02 UTC — next check-in due …").
 
 There is no other way to check in — deliberately, so the reply path is
@@ -292,7 +294,7 @@ sender — delivery always wins over sender hygiene.
 
 ### Deadman Switch
 - `POST /deadman/emails` - Configure recipient emails
-- `GET /deadman/emails` - Retrieve configured emails
+- `POST /deadman/emails/fetch` - Retrieve configured emails (password in the body)
 - `POST /deadman/activate` - Activate deadman switch
 - `POST /deadman/deactivate` - Deactivate deadman switch
 - `GET /deadman/timer-status` - Get current timer status (includes missed
@@ -337,9 +339,21 @@ Deploy/
 - **Password Hashing**: PBKDF2 with salt for secure password storage
 - **JWT Authentication**: Secure token-based session management
 - **Environment Variables**: Sensitive configuration kept in `.env` file
-- **Data Isolation**: User data stored in separate files
-- **Single-use Codes**: Every check-in and acknowledgement code works once,
-  is stored only as a hash, and is cancelled after five wrong guesses
+- **Separate Login and Data Keys**: the stored password verifier and the
+  key that encrypts your data are independent (HKDF from one PBKDF2
+  derivation), so the database alone decrypts nothing
+- **One Operator per Install**: signup closes after the first account
+  (`ALLOW_MULTIPLE_OPERATORS=true` to override), so nobody who reaches the
+  dashboard can use your mail account
+- **Login Throttling**: per-account backoff after five failures, and a cap
+  on concurrent password checks
+- **Abort Needs the Password**: and the operator is emailed when it happens
+- **Single-use Codes**: Every check-in and acknowledgement code works once
+  and is stored only as a hash
+- **Nothing Sensitive in Logs or the Browser**: recipient addresses never
+  appear in logs, debug endpoints require login and never return
+  recipients, and the dashboard keeps your password and recipient list in
+  per-tab session storage only
 
 ## Development
 

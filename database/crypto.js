@@ -24,47 +24,150 @@ function generateIV() {
   return crypto.randomBytes(IV_LENGTH);
 }
 
+// ---- Key derivation (v2.3.0: separate keys for login and for data) ----
+//
+// Before v2.3.0 the stored password hash WAS the AES key: hashPassword()
+// returned the PBKDF2 output and encryptData() used the same output as the
+// key, so anyone holding the database (a backup, a stolen disk) could
+// base64-decode users.password_hash and decrypt every user's data without
+// knowing a password. Now one PBKDF2 "master" is split with HKDF into two
+// independent keys: a login verifier (stored, prefixed "v2$") and a data key
+// (never stored). Legacy hashes and legacy blobs are still read; a user's
+// data is re-encrypted and their hash replaced at their next login
+// (userService.authenticateUser).
+
+const HASH_V2_PREFIX = "v2$";
+
+// PBKDF2 is deliberately slow and runs on the event loop when synchronous.
+// Most requests derive the same master several times (one per encrypted
+// field), so a short-lived cache keyed by sha256(salt|password) keeps the
+// server responsive; entries expire after five minutes.
+const MASTER_CACHE_TTL_MS = 5 * 60 * 1000;
+const MASTER_CACHE_MAX = 32;
+const masterCache = new Map();
+
+function masterCacheKey(password, salt) {
+  return crypto
+    .createHash("sha256")
+    .update(String(salt))
+    .update("\0")
+    .update(String(password))
+    .digest("hex");
+}
+
+function cacheMaster(k, master) {
+  masterCache.set(k, { master, at: Date.now() });
+  if (masterCache.size > MASTER_CACHE_MAX) {
+    masterCache.delete(masterCache.keys().next().value);
+  }
+}
+
+function cachedMaster(k) {
+  const hit = masterCache.get(k);
+  if (!hit) return null;
+  if (Date.now() - hit.at > MASTER_CACHE_TTL_MS) {
+    masterCache.delete(k);
+    return null;
+  }
+  return hit.master;
+}
+
 /**
- * Derive encryption key from password using PBKDF2
- * @param {string} password - User's password
- * @param {string} salt - Base64 encoded salt
- * @returns {Buffer} Derived key
+ * PBKDF2 master derived from the password. Not itself a key for anything
+ * new: in v2 it only feeds HKDF. (Legacy data and hashes used it directly.)
  */
 function deriveKey(password, salt) {
-  const saltBuffer = Buffer.from(salt, "base64");
-  return crypto.pbkdf2Sync(
+  const k = masterCacheKey(password, salt);
+  const hit = cachedMaster(k);
+  if (hit) return hit;
+  const master = crypto.pbkdf2Sync(
     password,
-    saltBuffer,
+    Buffer.from(salt, "base64"),
     PBKDF2_ITERATIONS,
     KEY_LENGTH,
     "sha256",
   );
+  cacheMaster(k, master);
+  return master;
+}
+
+/** Same as deriveKey, without blocking the event loop (login/signup). */
+function deriveKeyAsync(password, salt) {
+  const k = masterCacheKey(password, salt);
+  const hit = cachedMaster(k);
+  if (hit) return Promise.resolve(hit);
+  return new Promise((resolve, reject) => {
+    crypto.pbkdf2(
+      password,
+      Buffer.from(salt, "base64"),
+      PBKDF2_ITERATIONS,
+      KEY_LENGTH,
+      "sha256",
+      (err, master) => {
+        if (err) return reject(err);
+        cacheMaster(k, master);
+        resolve(master);
+      },
+    );
+  });
+}
+
+function hkdf(master, salt, info) {
+  return Buffer.from(
+    crypto.hkdfSync("sha256", master, Buffer.from(salt, "base64"), info, KEY_LENGTH),
+  );
+}
+
+function dataKeyFromMaster(master, salt) {
+  return hkdf(master, salt, "deploy-v2-data-encryption");
+}
+
+function verifierFromMaster(master, salt) {
+  return hkdf(master, salt, "deploy-v2-login-verifier");
 }
 
 /**
- * Hash password for database storage
- * @param {string} password - Plain text password
- * @param {string} salt - Base64 encoded salt
- * @returns {string} Base64 encoded password hash
+ * Hash password for database storage (v2: an HKDF verifier, independent of
+ * the data key).
+ * @returns {string} "v2$" + base64 verifier
  */
 function hashPassword(password, salt) {
-  const key = deriveKey(password, salt);
-  return key.toString("base64");
+  return HASH_V2_PREFIX + verifierFromMaster(deriveKey(password, salt), salt).toString("base64");
+}
+
+async function hashPasswordAsync(password, salt) {
+  const master = await deriveKeyAsync(password, salt);
+  return HASH_V2_PREFIX + verifierFromMaster(master, salt).toString("base64");
+}
+
+/** True when the stored hash predates v2 (it is the legacy data key). */
+function needsRehash(storedHash) {
+  return !String(storedHash || "").startsWith(HASH_V2_PREFIX);
+}
+
+function compareWithMaster(master, storedHash, salt) {
+  const stored = String(storedHash || "");
+  const expected = needsRehash(stored)
+    ? master // legacy: the stored hash was the master itself
+    : verifierFromMaster(master, salt);
+  const given = Buffer.from(
+    needsRehash(stored) ? stored : stored.slice(HASH_V2_PREFIX.length),
+    "base64",
+  );
+  if (given.length !== expected.length) return false;
+  return crypto.timingSafeEqual(given, expected);
 }
 
 /**
- * Verify password against stored hash
- * @param {string} password - Plain text password to verify
- * @param {string} storedHash - Base64 encoded stored hash
- * @param {string} salt - Base64 encoded salt
+ * Verify password against stored hash (v2 verifier or legacy hash).
  * @returns {boolean} True if password matches
  */
 function verifyPassword(password, storedHash, salt) {
-  const hash = hashPassword(password, salt);
-  return crypto.timingSafeEqual(
-    Buffer.from(hash, "base64"),
-    Buffer.from(storedHash, "base64"),
-  );
+  return compareWithMaster(deriveKey(password, salt), storedHash, salt);
+}
+
+async function verifyPasswordAsync(password, storedHash, salt) {
+  return compareWithMaster(await deriveKeyAsync(password, salt), storedHash, salt);
 }
 
 /**
@@ -79,8 +182,8 @@ function encryptData(data, password, salt) {
     // Convert data to string if it's an object
     const plaintext = typeof data === "string" ? data : JSON.stringify(data);
 
-    // Derive encryption key from password
-    const key = deriveKey(password, salt);
+    // v2 data key (HKDF of the PBKDF2 master) — never the stored hash.
+    const key = dataKeyFromMaster(deriveKey(password, salt), salt);
 
     // Generate random IV
     const iv = generateIV();
@@ -101,6 +204,7 @@ function encryptData(data, password, salt) {
       iv: iv.toString("base64"),
       authTag: authTag.toString("base64"),
       algorithm: ALGORITHM,
+      v: 2,
     };
   } catch (error) {
     throw new Error(`Encryption failed: ${error.message}`);
@@ -118,8 +222,10 @@ function decryptData(encryptedData, password, salt) {
   try {
     const { encrypted, iv, authTag } = encryptedData;
 
-    // Derive decryption key from password
-    const key = deriveKey(password, salt);
+    // v2 blobs use the HKDF data key; blobs written before v2.3.0 carry no
+    // `v` and were encrypted under the PBKDF2 master directly.
+    const master = deriveKey(password, salt);
+    const key = encryptedData.v === 2 ? dataKeyFromMaster(master, salt) : master;
 
     // Create decipher
     const decipher = crypto.createDecipheriv(
@@ -352,6 +458,10 @@ module.exports = {
   generateSalt,
   generateIV,
   deriveKey,
+  deriveKeyAsync,
+  hashPasswordAsync,
+  verifyPasswordAsync,
+  needsRehash,
   encryptData,
   decryptData,
 

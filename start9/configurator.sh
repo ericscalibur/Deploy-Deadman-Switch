@@ -1,6 +1,8 @@
 #!/bin/bash
 
 set -ea
+# Files written here hold mail passwords and SECRET_KEY: owner-only.
+umask 077
 
 ACTION="${1:-get}"
 CONFIG_FILE="/app/data/config.yaml"
@@ -260,10 +262,11 @@ process.stdout.write(JSON.stringify(cfg));
 ')
 
     # Primary: POST to the running service (requires inject:true in manifest.yaml)
-    if curl -sf --max-time 5 \
+    # Body on stdin, not argv: argv is visible in the process list.
+    if printf '%s' "$CONFIG_JSON" | curl -sf --max-time 5 \
         -X POST \
         -H "Content-Type: application/json" \
-        -d "$CONFIG_JSON" \
+        --data-binary @- \
         "$INTERNAL_URL" > /dev/null 2>&1; then
         : # Config saved via HTTP API — service will reload on restart
     else

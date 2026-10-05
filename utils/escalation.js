@@ -93,7 +93,24 @@ function pingAction({
   return "none";
 }
 
+// Inbound fail-safe (v2.2.0). While Deploy knows it cannot read its own
+// inbox, a living operator's replies go unseen, so the pre-fire warning and
+// the fire are held — but only when the outage began before the last
+// check-in email went out (a reply to it could have been missed), only for
+// a configured connection (no IMAP at all is never held, so an upgrade
+// never freezes an armed switch), and for at most capMs, after which normal
+// timing resumes and the alert says so.
+function inboundHoldDecision({ enabled, configured, downSince, lastCheckinSentAt, now, capMs }) {
+  if (!enabled || !configured || !downSince) return { held: false };
+  const down = new Date(downSince).getTime();
+  const lastSent = lastCheckinSentAt ? new Date(lastCheckinSentAt).getTime() : 0;
+  if (!(down < lastSent)) return { held: false, reason: "outage-after-last-email", downSince };
+  if (now - down >= capMs) return { held: false, capExpired: true, downSince };
+  return { held: true, downSince };
+}
+
 module.exports = {
+  inboundHoldDecision,
   DEFAULT_WARNING_MISSED_CHECKINS,
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,

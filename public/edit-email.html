@@ -668,7 +668,7 @@
                 const emailIndex = urlParams.get("index");
 
                 if (emailIndex !== null) {
-                    const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+                    const emails = JSON.parse(sessionStorage.getItem("emails") || "[]");
                     const email  = emails[emailIndex];
                     if (email) {
                         emailAddressInput.value    = email.address;
@@ -689,7 +689,7 @@
                     const contactChecks = contactChecksInput.checked;
 
                     try {
-                        const password = localStorage.getItem("userPassword");
+                        const password = sessionStorage.getItem("userPassword");
                         const response = await fetch("/deadman/emails", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
@@ -705,7 +705,7 @@
                         });
 
                         if (response.ok) {
-                            const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+                            const emails = JSON.parse(sessionStorage.getItem("emails") || "[]");
                             const emailData = {
                                 address: emailAddress,
                                 content: emailContent,
@@ -719,7 +719,7 @@
                                 emails.push(emailData);
                             }
 
-                            localStorage.setItem("emails", JSON.stringify(emails));
+                            sessionStorage.setItem("emails", JSON.stringify(emails));
                             const saveData = await response.json().catch(() => ({}));
                             alert(saveData.activeSwitchUpdated
                                 ? "Email saved successfully!\n\nYour deadman switch is armed — this change is live and will be included when the switch fires."

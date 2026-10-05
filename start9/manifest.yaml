@@ -1,7 +1,48 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.2.3
+version: 2.3.0
 release-notes: |
+  - (2.3.0) SECURITY RELEASE — update promptly, then follow the two steps
+    at the end of these notes.
+  - Fix (critical): the unauthenticated debug page /deadman/debug/status
+    returned every armed switch's decrypted recipient list — beneficiary
+    addresses, message text and the encrypted payload — to anyone who
+    could reach the dashboard (your LAN, or anyone with your onion
+    address). It now requires login, shows only your own switch, and
+    never includes recipients. The other unauthenticated test pages are
+    gone.
+  - Fix (critical): the stored password hash was the same key that
+    encrypts your data, so a copy of the database (a stolen disk, an old
+    backup) could be decrypted without your password. Login and data now
+    use separate keys. Your account is converted automatically the next
+    time you log in.
+  - Fix (high): wrong codes sent from your address could cancel your
+    check-in codes. A sender address can be forged, so someone who wanted
+    the switch to fire could keep cancelling each new code before you
+    answered it. Wrong guesses are now answered but never cancel a code.
+  - Fix (high): anyone who could reach the dashboard could create an
+    account and use it — and the test-email page — to send mail from your
+    account. Signup now closes after the first account, accepts a single
+    address only, and the test-email page is gone.
+  - Login is throttled per account after five failures, and password
+    checks no longer stall the server under a flood of attempts.
+  - Aborting the switch now asks for your password and emails you that it
+    happened.
+  - Your password and recipient list are kept only for the open tab, not
+    stored in the browser after it closes. Opening the dashboard in a new
+    tab asks you to log in again.
+  - Recipient addresses no longer appear in the audit log or in mail-error
+    log lines; the recipient list is fetched without the password in the
+    URL; config secrets are no longer visible in the process list, and
+    secret files inside the service are owner-only.
+  - The final CRITICAL email only mentions an advance warning to a
+    recipient who actually received one.
+  - Dashboard copy: "Test the entire sequence for yourself in as little as
+    12 minutes."
+  - AFTER UPDATING: (1) log in once — that converts your account to the
+    new keys; (2) take a fresh backup and destroy older backups made
+    before this version, since those still contain the old key-like
+    password hash.
   - (2.2.3) The URGENT warning to beneficiaries now states how many
     check-in emails actually went unanswered ("has not answered a scheduled
     check-in email" / "… 3 consecutive scheduled check-in emails") instead

@@ -44,7 +44,8 @@ function ensureSecretKey() {
       if (contents.length && !contents.endsWith("\n")) contents += "\n";
       contents += `SECRET_KEY=${key}\n`;
     }
-    fs.writeFileSync(envPath, contents);
+    fs.writeFileSync(envPath, contents, { mode: 0o600 });
+    try { fs.chmodSync(envPath, 0o600); } catch (_) {}
     console.log("Generated a new SECRET_KEY and saved it to .env");
   } catch (e) {
     console.warn(

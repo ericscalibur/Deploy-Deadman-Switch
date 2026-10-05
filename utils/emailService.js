@@ -19,6 +19,14 @@ const NTFY_REPEAT_MS = 60 * 60 * 1000;
 // hash prefix instead ("recipient 3f9a2c1d"). The operator's own address is
 // the account name and is logged as such.
 const { createHash } = require("crypto");
+// An SMTP error object can carry the rejected recipient (nodemailer's
+// `rejected` / `rejectedErrors`, or the address quoted in the server's
+// response), so recipient-facing failures log only these fields.
+function errSummary(error) {
+  if (!error) return "unknown error";
+  const parts = [error.code, error.responseCode, error.command].filter(Boolean);
+  return parts.length ? parts.join(" ") : "send failed";
+}
 function tag(address) {
   const h = createHash("sha256")
     .update(String(address || "").trim().toLowerCase())
@@ -539,7 +547,10 @@ This is an automated message from Deploy Deadman Switch.
     }
   }
 
-  async sendDeadmanEmails(userEmail, configuredEmails) {
+  // {warningSent}: a pre-fire warning went out on this switch. A recipient
+  // is only told "this is the follow-through" when it did AND they did not
+  // opt out of pre-trigger contact (opted-out recipients never get one).
+  async sendDeadmanEmails(userEmail, configuredEmails, { warningSent = false } = {}) {
     if (!(await this.ensureReady())) {
       console.error(
         `❌ Email service not initialized — DEADMAN emails for ${userEmail} NOT sent. Check EMAIL_USER/EMAIL_PASS.`,
@@ -561,6 +572,7 @@ This is an automated message from Deploy Deadman Switch.
     try {
       const sendPromises = configuredEmails.map(async (email, index) => {
         const recipientEmail = email.to || email.address;
+        const warnedThisRecipient = warningSent && email.contactChecks !== false;
         console.log(
           `📧 Sending deadman email ${index + 1} to ${tag(recipientEmail)}`,
         );
@@ -684,7 +696,7 @@ For more information see the FAQ: ${faqUrl}
           subject: `CRITICAL: ${email.subject || `Message from ${userEmail}`}`,
           html: `
             <h2>Important Message</h2>
-            <p>This message was automatically sent by Deploy Deadman Switch because ${userEmail} did not respond to check-ins for an extended period. If you received an advance warning email recently, this is the follow-through it announced.</p>
+            <p>This message was automatically sent by Deploy Deadman Switch because ${userEmail} did not respond to check-ins for an extended period.${warnedThisRecipient ? " It is the follow-through to the advance warning you received recently." : ""}</p>
             <hr>
             <div style="border-left: 4px solid #007bff; padding-left: 15px; margin: 20px 0;">
               ${email.body || email.content || "No message content provided."}
@@ -699,7 +711,7 @@ For more information see the FAQ: ${faqUrl}
           text: `
 Important Message
 
-This message was automatically sent by Deploy Deadman Switch because ${userEmail} did not respond to check-ins for an extended period. If you received an advance warning email recently, this is the follow-through it announced.
+This message was automatically sent by Deploy Deadman Switch because ${userEmail} did not respond to check-ins for an extended period.${warnedThisRecipient ? " It is the follow-through to the advance warning you received recently." : ""}
 
 ---
 
@@ -724,7 +736,7 @@ Print or save this entire email — it contains the encrypted payload needed for
         } catch (error) {
           console.error(
             `❌ Failed to send deadman email ${index + 1} to ${tag(recipientEmail)}:`,
-            error,
+            errSummary(error),
           );
           return { success: false, index, error: error.message };
         }
@@ -837,7 +849,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     } catch (error) {
       console.error(
         `❌ Failed to send beneficiary warning to ${tag(recipientEmail)}:`,
-        error,
+        errSummary(error),
       );
       return false;
     }
@@ -976,7 +988,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}. Afte
     } catch (error) {
       console.error(
         `❌ Failed to send beneficiary ping to ${tag(recipientEmail)}:`,
-        error,
+        errSummary(error),
       );
       return false;
     }
@@ -1069,7 +1081,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
     } catch (error) {
       console.error(
         `❌ Failed to send stand-down notice to ${tag(recipientEmail)}:`,
-        error,
+        errSummary(error),
       );
       return false;
     }
@@ -1103,7 +1115,7 @@ Automated message from Deploy Deadman Switch on behalf of ${operatorEmail}.
       console.log(`✅ Receipt sent to ${tag(to)}: ${subject}`, info.messageId);
       return true;
     } catch (error) {
-      console.error(`❌ Failed to send receipt to ${tag(to)}:`, error);
+      console.error(`❌ Failed to send receipt to ${tag(to)}:`, errSummary(error));
       return false;
     }
   }

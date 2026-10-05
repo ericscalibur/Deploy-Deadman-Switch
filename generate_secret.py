@@ -40,8 +40,11 @@ PORT=3000
         print(f"⚠️  {out_path} already exists. Backup created as {out_path}.backup")
         os.rename(out_path, out_path + '.backup')
 
-    with open(out_path, 'w') as f:
+    # Owner-only: the file holds SECRET_KEY and mail passwords.
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
         f.write(env_content)
+    os.chmod(out_path, 0o600)
 
     print("✅ .env file created successfully!")
 

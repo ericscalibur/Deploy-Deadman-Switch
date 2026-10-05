@@ -32,8 +32,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await response.json();
 
         if (response.ok) {
-          // Store only the password for encryption (token is now in HTTP-only cookie)
-          localStorage.setItem("userPassword", password);
+          // The password is needed client-side to decrypt the recipient
+          // list. It lives in sessionStorage (this tab only, gone when the
+          // tab closes), never localStorage, which would outlive the 24 h
+          // login on disk (v2.3.0). Clear what older versions left behind.
+          sessionStorage.setItem("userPassword", password);
+          try {
+            localStorage.removeItem("userPassword");
+            localStorage.removeItem("emails");
+          } catch (_) {}
 
           if (mode === "signup") {
             // After successful signup, revert to login mode
@@ -119,7 +126,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       } catch (error) {}
 
       // Remove password from localStorage
-      localStorage.removeItem("userPassword");
+      sessionStorage.removeItem("userPassword");
       localStorage.removeItem("deadmanSwitchActivated");
       localStorage.removeItem("lastActivity");
 
@@ -142,7 +149,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const savedFormData = JSON.parse(
       localStorage.getItem("formSelections") || "{}",
     );
-    const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+    const emails = JSON.parse(sessionStorage.getItem("emails") || "[]");
 
     // Check if user has made all required selections
     if (!savedFormData.checkinInterval) {
@@ -170,14 +177,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Additional validation: Check if emails were saved to backend
     try {
-      const password = localStorage.getItem("userPassword");
-      const response = await fetch(
-        `/deadman/emails?password=${encodeURIComponent(password)}`,
-        {
-          method: "GET",
-          credentials: "include", // Include HTTP-only cookie
-        },
-      );
+      const password = sessionStorage.getItem("userPassword");
+      const response = await fetch("/deadman/emails/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ password }),
+        });
 
       if (response.ok) {
         const backendData = await response.json();
@@ -223,7 +229,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     setButtonBusy("Deploying…");
 
     try {
-      const password = localStorage.getItem("userPassword");
+      const password = sessionStorage.getItem("userPassword");
       const requestData = {
         checkinMethod: savedFormData.checkinMethod,
         checkinInterval: savedFormData.checkinInterval,
@@ -355,7 +361,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to delete an email
   async function deleteEmail(index) {
     try {
-      const password = localStorage.getItem("userPassword");
+      const password = sessionStorage.getItem("userPassword");
 
       // Delete from backend
       const response = await fetch(`/deadman/emails/${index}`, {
@@ -371,9 +377,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (response.ok) {
         // Remove from localStorage
-        const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+        const emails = JSON.parse(sessionStorage.getItem("emails") || "[]");
         emails.splice(index, 1);
-        localStorage.setItem("emails", JSON.stringify(emails));
+        sessionStorage.setItem("emails", JSON.stringify(emails));
 
         // Refresh the table
         loadEmails();
@@ -508,7 +514,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function loadEmails(options = {}) {
-    const emails = JSON.parse(localStorage.getItem("emails") || "[]");
+    const emails = JSON.parse(sessionStorage.getItem("emails") || "[]");
     const signature = emailsSignature(emails);
     const changed = signature !== renderedEmailsSignature;
 
@@ -531,7 +537,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Ping rows are keyed by address hash server-side; this endpoint maps
   // them back to readable addresses after decrypting with the password.
   async function loadBeneficiaryStatus() {
-    const password = localStorage.getItem("userPassword");
+    const password = sessionStorage.getItem("userPassword");
     if (!password) return;
     try {
       const response = await fetch("/deadman/beneficiary-status", {
@@ -587,17 +593,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Load emails from the backend (used on login so Tor Browser session clears don't lose data)
   async function loadEmailsFromBackend() {
-    const password = localStorage.getItem("userPassword");
+    const password = sessionStorage.getItem("userPassword");
     if (!password) { loadEmails(); return; }
     try {
-      const response = await fetch(
-        `/deadman/emails?password=${encodeURIComponent(password)}`,
-        { method: "GET", credentials: "include" }
-      );
+      const response = await fetch("/deadman/emails/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ password }),
+        });
       if (response.ok) {
         const data = await response.json();
         const emails = data.emails || [];
-        localStorage.setItem("emails", JSON.stringify(emails));
+        sessionStorage.setItem("emails", JSON.stringify(emails));
         renderedEmailsSignature = emailsSignature(emails);
         populateEmailsTable(emails);
         lastStatusFetch = Date.now();
@@ -1107,7 +1115,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       credentials: "include", // Include HTTP-only cookie
     });
 
-    if (response.ok) {
+    if (response.ok && !sessionStorage.getItem("userPassword")) {
+      // Logged in (cookie) but this tab has no password to decrypt with —
+      // a new tab or a restored session. Ask for it again rather than run a
+      // dashboard that cannot read its own recipients.
+      try {
+        localStorage.removeItem("userPassword");
+        localStorage.removeItem("emails");
+      } catch (_) {}
+      loginPage.style.display = "flex";
+      setupPage.style.display = "none";
+    } else if (response.ok) {
       // User is logged in
       loginPage.style.display = "none";
       setupPage.style.display = "block";
@@ -1232,21 +1250,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Function to sync emails from localStorage to backend
   async function syncEmailsToBackend() {
     try {
-      const localEmails = JSON.parse(localStorage.getItem("emails") || "[]");
+      const localEmails = JSON.parse(sessionStorage.getItem("emails") || "[]");
 
       if (localEmails.length === 0) {
         return;
       }
 
       // Get current backend emails
-      const password = localStorage.getItem("userPassword");
-      const getResponse = await fetch(
-        `/deadman/emails?password=${encodeURIComponent(password)}`,
-        {
-          method: "GET",
-          credentials: "include", // Include HTTP-only cookie
-        },
-      );
+      const password = sessionStorage.getItem("userPassword");
+      const getResponse = await fetch("/deadman/emails/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ password }),
+        });
 
       let backendEmails = [];
       if (getResponse.ok) {
@@ -1267,7 +1284,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           );
 
           if (!exists) {
-            const password = localStorage.getItem("userPassword");
+            const password = sessionStorage.getItem("userPassword");
             const syncResponse = await fetch("/deadman/emails", {
               method: "POST",
               headers: {
@@ -1422,7 +1439,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const response = await fetch("/deadman/deactivate", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         credentials: "include", // Include HTTP-only cookie
+        body: JSON.stringify({ password: sessionStorage.getItem("userPassword") }),
       });
 
       if (response.ok) {
@@ -1448,63 +1467,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       switchMutationInFlight = false;
       clearButtonBusy();
       syncWithBackend();
-    }
-  }
-
-  // Function to reset deadman data after activation
-  async function resetDeadmanData() {
-    const confirmed = confirm(
-      "Are you sure you want to reset all deadman switch data?\n\n" +
-        "This will permanently delete:\n" +
-        "• All configured emails\n" +
-        "• All deadman switch settings\n" +
-        "• All check-in tokens\n\n" +
-        "You can then configure a new deadman switch from scratch.",
-    );
-
-    if (!confirmed) return;
-
-    try {
-      const token = localStorage.getItem("token");
-      const response = await fetch("/deadman/reset", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        alert(
-          "Deadman switch data has been reset successfully!\n\nYou can now configure a new deadman switch.",
-        );
-
-        // Clear local storage
-        localStorage.removeItem("deadmanSwitchActivated");
-        localStorage.removeItem("lastActivity");
-        localStorage.removeItem("emails");
-        localStorage.removeItem("formSelections");
-
-        // Reset local state
-        deadmanSwitchActivated = false;
-
-        // Update button state
-        updateButtonState("inactive");
-
-        // Reload emails (should be empty now)
-        loadEmails();
-
-        // Reset countdown displays
-        await startCountdownTimers();
-      } else {
-        const data = await response.json();
-        alert(
-          "Failed to reset deadman data: " + (data.message || "Unknown error"),
-        );
-      }
-    } catch (error) {
-      alert("Failed to reset deadman data");
     }
   }
 

@@ -6,6 +6,7 @@ const {
   warningPossible,
   warningAction,
   pingAction,
+  inboundHoldDecision,
   DEFAULT_WARNING_MISSED_CHECKINS,
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,
@@ -225,4 +226,49 @@ test("acked cycle: next ping when the year is up, not before", () => {
     }),
     "send",
   );
+});
+
+// ---- inboundHoldDecision (reply-by-email fail-safe) ----
+
+const CAP = 7 * DAY;
+const T0 = Date.UTC(2026, 9, 1);
+const holdBase = { enabled: true, configured: true, capMs: CAP };
+
+test("no outage → not held", () => {
+  assert.strictEqual(inboundHoldDecision({ ...holdBase, downSince: null, lastCheckinSentAt: T0, now: T0 }).held, false);
+});
+
+test("outage that began before the last check-in email → held", () => {
+  const r = inboundHoldDecision({ ...holdBase, downSince: T0, lastCheckinSentAt: T0 + 1000, now: T0 + DAY });
+  assert.strictEqual(r.held, true);
+});
+
+test("outage that began after the last check-in email → not held", () => {
+  const r = inboundHoldDecision({ ...holdBase, downSince: T0 + 2000, lastCheckinSentAt: T0, now: T0 + DAY });
+  assert.strictEqual(r.held, false);
+  assert.strictEqual(r.reason, "outage-after-last-email");
+});
+
+test("hold expires at exactly the cap and says so", () => {
+  const args = { ...holdBase, downSince: T0, lastCheckinSentAt: T0 + 1000 };
+  assert.strictEqual(inboundHoldDecision({ ...args, now: T0 + CAP - 1 }).held, true);
+  const r = inboundHoldDecision({ ...args, now: T0 + CAP });
+  assert.strictEqual(r.held, false);
+  assert.strictEqual(r.capExpired, true);
+});
+
+test("IMAP not configured or disabled → never held (upgrade never freezes a switch)", () => {
+  const args = { downSince: T0, lastCheckinSentAt: T0 + 1000, now: T0 + DAY, capMs: CAP };
+  assert.strictEqual(inboundHoldDecision({ ...args, enabled: true, configured: false }).held, false);
+  assert.strictEqual(inboundHoldDecision({ ...args, enabled: false, configured: true }).held, false);
+});
+
+test("accepts ISO strings and Dates for the timestamps", () => {
+  const r = inboundHoldDecision({
+    ...holdBase,
+    downSince: new Date(T0).toISOString(),
+    lastCheckinSentAt: new Date(T0 + 1000),
+    now: T0 + DAY,
+  });
+  assert.strictEqual(r.held, true);
 });

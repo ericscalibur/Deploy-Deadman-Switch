@@ -1,10 +1,15 @@
 #!/bin/bash
 
 set -ea
+# .env and the database hold secrets: owner-only for anything created here.
+umask 077
 
 # Running as root — fix volume permissions then drop to app user
 mkdir -p /app/data
 chown -R deadman:nodejs /app/data
+# Existing installs: tighten secrets written before v2.3.0.
+chmod 700 /app/data 2>/dev/null || true
+chmod 600 /app/data/.env /app/data/deadman_switch.db /app/data/config.yaml 2>/dev/null || true
 
 # Generate .env in the persistent data volume if it doesn't exist
 if [ ! -f /app/data/.env ]; then

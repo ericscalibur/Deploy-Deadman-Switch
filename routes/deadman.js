@@ -17,6 +17,7 @@ const {
   warningPossible,
   warningAction,
   pingAction,
+  inboundHoldDecision,
   DEFAULT_WARNING_MISSED_CHECKINS,
   DEFAULT_PING_INTERVAL_DAYS,
   DEFAULT_PING_ACK_GRACE_DAYS,
@@ -33,6 +34,17 @@ const {
   rawHeader,
 } = require("../utils/inboundParser");
 const inboundMail = require("../utils/inboundMail");
+const { createLoginGuard } = require("../utils/loginGuard");
+const loginGuard = createLoginGuard();
+
+// 429 with a human message; used by login and signup.
+function tooMany(res, ms, what) {
+  const secs = Math.ceil(ms / 1000);
+  res.set("Retry-After", String(secs));
+  return res.status(429).json({
+    message: `Too many ${what}. Try again in ${secs >= 60 ? Math.ceil(secs / 60) + " minute(s)" : secs + " seconds"}.`,
+  });
+}
 
 // Beneficiary escalation configuration (Issues #1/#2). Defaults follow the
 // modification spec: warning after 5 consecutive check-in intervals of
@@ -94,8 +106,6 @@ const REISSUE_MIN_GAP_MS =
 const lastInboundReissueAt = new Map(); // userId -> ms
 // Every receipt goes out at most once per live code (and per receipt type).
 const receiptsSent = new Set(); // `${codeId}:${type}`
-// Wrong guesses allowed against a live code before it is retired.
-const MAX_FAILED_ATTEMPTS = 5;
 // Fail-safe hold cap (spec "Fail-safe"): after this long without a readable
 // inbox, normal timing resumes and the alert says so.
 const INBOUND_HOLD_CAP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -256,6 +266,9 @@ async function recoverActiveDeadmanSwitches() {
             userEmails.set(session.email, recoveredEmails);
             await executeDeadmanActivation(session.email, recoveredEmails, {
               sessionToken: session.session_token,
+              warningSentAt: session.warning_sent_at
+                ? parseDbTimestamp(session.warning_sent_at)
+                : null,
             });
           } else {
             console.error(
@@ -747,16 +760,14 @@ async function registerMissedCheckin(userEmail, switchData) {
 // never tears down or silently freezes an armed switch.
 function inboundHold(switchData) {
   const st = inboundMail.getState();
-  if (!st.enabled || !st.configured || !st.downSince) return { held: false };
-  const downSince = new Date(st.downSince).getTime();
-  const lastSent = switchData && switchData.lastCheckinSentAt
-    ? new Date(switchData.lastCheckinSentAt).getTime()
-    : 0;
-  if (!(downSince < lastSent)) return { held: false, reason: "outage-after-last-email", downSince: st.downSince };
-  if (Date.now() - downSince >= INBOUND_HOLD_CAP_MS) {
-    return { held: false, capExpired: true, downSince: st.downSince };
-  }
-  return { held: true, downSince: st.downSince };
+  return inboundHoldDecision({
+    enabled: st.enabled,
+    configured: st.configured,
+    downSince: st.downSince,
+    lastCheckinSentAt: switchData ? switchData.lastCheckinSentAt : null,
+    now: Date.now(),
+    capMs: INBOUND_HOLD_CAP_MS,
+  });
 }
 
 // Email first, ntfy in addition; at most once per operator per 24 h.
@@ -1084,10 +1095,10 @@ setInterval(runBeneficiaryPingSweep, BENEFICIARY_SWEEP_INTERVAL_MS);
 // session before delivery was confirmed could silently lose the switch's
 // entire purpose on one SMTP hiccup.
 const DEADMAN_RETRY_MS = 10 * 60 * 1000;
-async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1) {
+async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1, opts = {}) {
   let sent = false;
   try {
-    sent = await emailService.sendDeadmanEmails(userEmail, emails);
+    sent = await emailService.sendDeadmanEmails(userEmail, emails, opts);
   } catch (error) {
     console.error(
       `❌ DEADMAN DELIVERY: Attempt ${attempt} errored for ${userEmail}:`,
@@ -1146,7 +1157,7 @@ async function deliverDeadmanEmails(userEmail, emails, sessionToken, attempt = 1
     }
   }
   setTimeout(() => {
-    deliverDeadmanEmails(userEmail, emails, sessionToken, attempt + 1);
+    deliverDeadmanEmails(userEmail, emails, sessionToken, attempt + 1, opts);
   }, DEADMAN_RETRY_MS);
   return false;
 }
@@ -1281,6 +1292,20 @@ setInterval(async () => {
   }
 }, SAVE_INTERVAL);
 
+// What debug/status endpoints may say about a switch's settings. NEVER the
+// recipient list: settings.emails holds decrypted addresses, message bodies
+// and payloads. (v2.2.4 — an unauthenticated /debug/status returned exactly
+// that to anyone who could reach the dashboard.)
+function publicSettings(settings) {
+  const s = settings || {};
+  return {
+    checkinMethod: s.checkinMethod,
+    checkinInterval: s.checkinInterval,
+    inactivityPeriod: s.inactivityPeriod,
+    recipientCount: Array.isArray(s.emails) ? s.emails.length : 0,
+  };
+}
+
 // Middleware to verify JWT token and load user data
 const authenticateToken = async (req, res, next) => {
   // Try to get token from HTTP-only cookie first, then fallback to Authorization header
@@ -1313,12 +1338,14 @@ const authenticateToken = async (req, res, next) => {
   });
 };
 
-// Simple test route
-router.get("/test", (req, res) => {
-  res.json({ message: "Minimal deadman routes working!" });
-});
-
 // User signup endpoint (encrypted database)
+// One operator per install (v2.3.0). Deploy sends from the owner's own
+// mail account; open signup let anyone who could reach the dashboard create
+// an account — even with a comma-separated "address" — and use the owner's
+// mailbox to send mail anywhere (security sweep, 2026-10-04). A second
+// account needs ALLOW_MULTIPLE_OPERATORS=true.
+const SINGLE_ADDRESS_RE = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/;
+
 router.post("/signup", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -1326,13 +1353,30 @@ router.post("/signup", async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password required" });
     }
+    if (!SINGLE_ADDRESS_RE.test(String(email).trim())) {
+      return res.status(400).json({ message: "Enter a single valid email address" });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+    if (
+      String(process.env.ALLOW_MULTIPLE_OPERATORS || "").toLowerCase() !== "true" &&
+      (await userService.countUsers()) > 0
+    ) {
+      return res.status(403).json({
+        message:
+          "This Deploy already has its operator account. Log in instead. (Running Deploy for more than one person requires ALLOW_MULTIPLE_OPERATORS=true.)",
+      });
+    }
 
+    const release = loginGuard.acquire();
+    if (!release) return tooMany(res, 5000, "requests at once");
     // Create new user with encrypted data
     const userData = await userService.createUser(email, password, {
       emails: [],
       settings: {},
       checkinTokens: {},
-    });
+    }).finally(release);
 
     // Generate JWT token
     const token = jwt.sign(
@@ -1401,8 +1445,27 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Email and password required" });
     }
 
+    const wait = loginGuard.retryAfter(email);
+    if (wait > 0) return tooMany(res, wait, "failed login attempts for this account");
+    const release = loginGuard.acquire();
+    if (!release) return tooMany(res, 5000, "login attempts at once");
+
     // Authenticate user and get decrypted data
-    const userData = await userService.authenticateUser(email, password);
+    let userData;
+    try {
+      userData = await userService.authenticateUser(email, password);
+    } catch (authErr) {
+      if (authErr && authErr.message === "Invalid credentials") {
+        const n = loginGuard.recordFailure(email);
+        if (n >= 5) {
+          console.warn(`🔒 LOGIN: ${n} consecutive failed logins for one account — throttling`);
+        }
+      }
+      throw authErr;
+    } finally {
+      release();
+    }
+    loginGuard.recordSuccess(email);
 
     // Generate JWT token
     const token = jwt.sign(
@@ -1522,7 +1585,9 @@ router.post("/emails", authenticateToken, async (req, res) => {
     await userService.logAudit(
       userId,
       emailIndex !== null ? "EMAIL_UPDATED" : "EMAIL_ADDED",
-      `Email ${emailIndex !== null ? "updated" : "added"}: ${emailAddress}`,
+      // Hash prefix, never the address: audit_log is plaintext at rest and
+      // travels in every backup (v2.2.4).
+      `Email ${emailIndex !== null ? "updated" : "added"}: recipient ${hashEmail(emailAddress).slice(0, 8)}`,
       req.ip,
       req.get("User-Agent"),
     );
@@ -1546,12 +1611,20 @@ router.post("/emails", authenticateToken, async (req, res) => {
 });
 
 // Get emails endpoint (encrypted database)
-router.get("/emails", authenticateToken, async (req, res) => {
+// The password needed to decrypt travels in the body, never in a URL
+// (URLs end up in logs, proxies and browser history). v2.2.4: was GET with
+// ?password=; the GET now refuses.
+router.get("/emails", authenticateToken, (req, res) => {
+  res.status(400).json({
+    message: "Use POST /deadman/emails/fetch with the password in the body.",
+  });
+});
+
+router.post("/emails/fetch", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
 
-    // Get password from query params or body (needed for decryption)
-    const password = req.query.password || req.body.password;
+    const password = req.body && req.body.password;
     if (!password) {
       return res
         .status(400)
@@ -2141,7 +2214,12 @@ async function executeDeadmanActivation(userEmail, emails, switchData = null) {
 
     // Deliver and close the session only on confirmed delivery; on failure
     // the helper leaves the session active, alerts, and schedules retries.
-    const delivered = await deliverDeadmanEmails(userEmail, emails, sessionToken);
+    // Whether a pre-fire warning actually went out on this switch — the
+    // CRITICAL email only refers back to one if it did (tester report,
+    // 2026-10-04: the reference confused recipients who never got one).
+    const delivered = await deliverDeadmanEmails(userEmail, emails, sessionToken, 1, {
+      warningSent: !!(activeData && activeData.warningSentAt),
+    });
 
     deadmanActivationHistory.set(userEmail, {
       triggered: true,
@@ -2200,6 +2278,14 @@ router.post("/deactivate", authenticateToken, async (req, res) => {
       });
     }
 
+    // Disarming is the one action that silently removes the protection, so
+    // a login cookie alone is not enough: an unattended browser or a stolen
+    // cookie must not be able to do it (v2.3.0). The operator is also told
+    // by email, so a disarm they did not make cannot go unnoticed.
+    if (!(await userService.checkPassword(req.user.userId, req.body && req.body.password))) {
+      return res.status(403).json({ message: "Password required to abort the switch" });
+    }
+
     // Get the active switch data
     const switchData = activeDeadmanSwitches.get(userEmail);
     console.log(`✅ DEACTIVATE: Found active switch for ${userEmail}`);
@@ -2241,6 +2327,20 @@ router.post("/deactivate", authenticateToken, async (req, res) => {
       `✅ DEACTIVATE: Successfully deactivated deadman switch for ${userEmail}`,
     );
 
+    emailService
+      .sendAlertEmail(
+        userEmail,
+        "WARNING: your Deploy switch was aborted",
+        `<p>Your Deploy deadman switch was <strong>aborted</strong> from the
+         dashboard at ${new Date().toISOString().replace("T", " ").slice(0, 16)} UTC.
+         Nothing will be sent to your recipients.</p>
+         <p>If this was not you, log in, deploy again, and change your password.</p>`,
+      )
+      .catch((error) => console.error("❌ DEACTIVATE: notice email failed:", error.message));
+    notify(`Deploy switch for ${userEmail} was ABORTED from the dashboard.`, {
+      tags: "warning,no_entry",
+    });
+
     res.status(200).json({
       success: true,
       message: "Deadman switch deactivated successfully",
@@ -2255,266 +2355,6 @@ router.post("/deactivate", authenticateToken, async (req, res) => {
       message: "Failed to deactivate deadman switch",
       error: error.message,
     });
-  }
-});
-
-// Simple test endpoint without authentication
-router.get("/test-intervals", (req, res) => {
-  try {
-    console.log("🧪 TEST-INTERVALS: Endpoint hit");
-    const testResults = {
-      "1-minutes": getIntervalMs("1-minutes"),
-      "1-minute": getIntervalMs("1-minute"),
-      "2-hours": getIntervalMs("2-hours"),
-      "3-minutes": getInactivityMs("3-minutes"),
-    };
-    console.log("🧪 TEST-INTERVALS: Results =", testResults);
-    res.json({
-      success: true,
-      testResults,
-      expectedResults: {
-        "1-minutes": 60000,
-        "1-minute": 60000,
-        "2-hours": 7200000,
-        "3-minutes": 180000,
-      },
-    });
-  } catch (error) {
-    console.error("❌ TEST-INTERVALS ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post("/debug-activation", authenticateToken, (req, res) => {
-  try {
-    const { checkinInterval, inactivityPeriod, password } = req.body;
-    const checkinMethod = req.body.checkinMethod || "email";
-
-    // Never log req.body here — it contains the user's plaintext password.
-    console.log(`🔍 DEBUG-ACTIVATION: checkinInterval = "${checkinInterval}"`);
-    console.log(
-      `🔍 DEBUG-ACTIVATION: inactivityPeriod = "${inactivityPeriod}"`,
-    );
-
-    const checkinIntervalMs = getIntervalMs(checkinInterval);
-    const inactivityMs = getInactivityMs(inactivityPeriod);
-
-    console.log(
-      `🔍 DEBUG-ACTIVATION: Calculated checkinIntervalMs = ${checkinIntervalMs}ms (${checkinIntervalMs / 1000 / 60} minutes)`,
-    );
-    console.log(
-      `🔍 DEBUG-ACTIVATION: Calculated inactivityMs = ${inactivityMs}ms (${inactivityMs / 1000 / 60} minutes)`,
-    );
-
-    res.json({
-      success: true,
-      received: {
-        checkinMethod,
-        checkinInterval,
-        inactivityPeriod,
-        hasPassword: !!password,
-      },
-      calculated: {
-        checkinIntervalMs,
-        inactivityMs,
-        checkinMinutes: checkinIntervalMs / 1000 / 60,
-        inactivityMinutes: inactivityMs / 1000 / 60,
-      },
-    });
-  } catch (error) {
-    console.error("❌ DEBUG-ACTIVATION ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Debug endpoint to clear requesting user's active switch and start fresh
-router.post("/debug-clear-all", authenticateToken, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    console.log(`🧹 DEBUG-CLEAR-ALL: Request from ${userEmail}`);
-
-    // Scope to requesting user only
-    let clearedCount = 0;
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-      clearedCount = 1;
-      console.log(`🧹 Cleared active switch for ${userEmail}`);
-    }
-
-    retireOperatorCodes(req.user.userId, "debug-clear-all");
-
-    // Clear this user's emails and history
-    const hadEmails = userEmails.has(userEmail);
-    const hadHistory = deadmanActivationHistory.has(userEmail);
-    userEmails.delete(userEmail);
-    deadmanActivationHistory.delete(userEmail);
-
-    console.log(`🧹 DEBUG-CLEAR-ALL: Cleanup complete for ${userEmail}`);
-
-    res.json({
-      success: true,
-      message: "Your active switch and data cleared",
-      cleared: {
-        activeSwitches: clearedCount,
-        userEmails: hadEmails ? 1 : 0,
-        activationHistory: hadHistory ? 1 : 0,
-      },
-    });
-  } catch (error) {
-    console.error("❌ DEBUG-CLEAR-ALL ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Debug endpoint to show current active switch (own user only)
-router.get("/debug-active-switches", authenticateToken, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const now = Date.now();
-    const switchData = activeDeadmanSwitches.get(userEmail);
-
-    if (!switchData) {
-      return res.json({ success: true, activeSwitches: [], totalActive: 0 });
-    }
-
-    res.json({
-      success: true,
-      activeSwitches: [
-        {
-          userEmail,
-          settings: switchData.settings,
-          timeToNextCheckin: `${Math.round((switchData.nextCheckin - now) / 1000 / 60)} minutes`,
-          timeToDeadman: `${Math.round((switchData.deadmanActivation - now) / 1000 / 60)} minutes`,
-          hasCheckinTimer: !!switchData.checkinTimer,
-          hasDeadmanTimer: !!switchData.deadmanTimer,
-          lastActivity: switchData.lastActivity,
-        },
-      ],
-      totalActive: 1,
-    });
-  } catch (error) {
-    console.error("❌ DEBUG-ACTIVE-SWITCHES ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Debug endpoint to clear expired database sessions
-router.post("/debug-clear-expired", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const userId = req.user.userId;
-    console.log(`🧹 DEBUG-CLEAR-EXPIRED: Request from ${userEmail}`);
-
-    // Clear from memory first
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-      console.log(`🧹 Cleared active switch from memory`);
-    }
-
-    // Clear from database
-    try {
-      await userService.deleteDeadmanSession(userId);
-      console.log(`🧹 Cleared database session`);
-    } catch (error) {
-      console.log(`🧹 No database session to clear or error:`, error.message);
-    }
-
-    // Clear related data
-    userEmails.delete(userEmail);
-    deadmanActivationHistory.delete(userEmail);
-    retireOperatorCodes(userId, "debug-clear-expired");
-
-    console.log(`🧹 DEBUG-CLEAR-EXPIRED: Complete cleanup for ${userEmail}`);
-
-    res.json({
-      success: true,
-      message: "Expired sessions and data cleared for user",
-      userEmail: userEmail,
-    });
-  } catch (error) {
-    console.error("❌ DEBUG-CLEAR-EXPIRED ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Debug status endpoint to check active switches
-router.get("/debug-status", authenticateToken, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    console.log(`🔍 DEBUG-STATUS: Request from ${userEmail}`);
-
-    const activeSwitch = activeDeadmanSwitches.get(userEmail);
-
-    res.json({
-      success: true,
-      userEmail,
-      hasActiveSwitch: activeDeadmanSwitches.has(userEmail),
-      switchData: activeSwitch
-        ? {
-            hasCheckinTimer: !!activeSwitch.checkinTimer,
-            hasDeadmanTimer: !!activeSwitch.deadmanTimer,
-            lastActivity: activeSwitch.lastActivity,
-            nextCheckin: activeSwitch.nextCheckin,
-            deadmanActivation: activeSwitch.deadmanActivation,
-            settings: activeSwitch.settings,
-          }
-        : null,
-      inbound: inboundStatus(),
-      totalActiveSwitches: activeDeadmanSwitches.size,
-      hasUserEmails: userEmails.has(userEmail),
-      userEmailsCount: userEmails.has(userEmail)
-        ? userEmails.get(userEmail).length
-        : 0,
-    });
-  } catch (error) {
-    console.error(`❌ DEBUG-STATUS: Error for ${req.user?.email}:`, error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Clear all database sessions for testing
-router.post("/clear-sessions", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const userEmail = req.user.email;
-    console.log(`🧹 CLEAR-SESSIONS: Request from ${userEmail}`);
-
-    // Clear in-memory data
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-      console.log(
-        `🧹 CLEAR-SESSIONS: Cleared in-memory switch for ${userEmail}`,
-      );
-    }
-
-    // Clear database sessions
-    await userService.deactivateSession(userId);
-    console.log(
-      `🧹 CLEAR-SESSIONS: Cleared database sessions for ${userEmail}`,
-    );
-
-    // Clear other data
-    userEmails.delete(userEmail);
-    await retireOperatorCodes(userId, "clear-sessions");
-
-    console.log(`✅ CLEAR-SESSIONS: All data cleared for ${userEmail}`);
-
-    res.json({
-      success: true,
-      message: "All sessions and data cleared successfully",
-    });
-  } catch (error) {
-    console.error(`❌ CLEAR-SESSIONS: Error for ${req.user?.email}:`, error);
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -2747,116 +2587,30 @@ router.get("/deadman-status", authenticateToken, async (req, res) => {
 });
 
 // Debug endpoint to check backend state
-router.get("/debug/status", (req, res) => {
-  const switches = [];
-  for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
-    switches.push({
-      userEmail,
-      lastActivity: switchData.lastActivity,
-      hasCheckinTimer: !!switchData.checkinTimer,
-      hasDeadmanTimer: !!switchData.deadmanTimer,
-      settings: switchData.settings,
-    });
-  }
+// Requires login and reports only the caller's own switch (v2.2.4: this was
+// unauthenticated and listed every user's switch with its decrypted
+// recipient list).
+router.get("/debug/status", authenticateToken, (req, res) => {
+  const userEmail = req.user.email;
+  const switchData = activeDeadmanSwitches.get(userEmail);
+  const switches = switchData
+    ? [
+        {
+          userEmail,
+          lastActivity: switchData.lastActivity,
+          hasCheckinTimer: !!switchData.checkinTimer,
+          hasDeadmanTimer: !!switchData.deadmanTimer,
+          settings: publicSettings(switchData.settings),
+        },
+      ]
+    : [];
 
   res.json({
     activeDeadmanSwitches: switches,
-    userEmailsCount: userEmails.size,
+    userEmailsCount: (userEmails.get(userEmail) || []).length,
     inbound: inboundStatus(),
     timestamp: new Date().toISOString(),
   });
-});
-
-// Email test endpoint
-router.post("/debug/test-email", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-
-    // Test email service connection
-    const connectionTest = await emailService.testEmailConnection();
-
-    if (!connectionTest.success) {
-      return res.json({
-        success: false,
-        message: "Email service connection failed",
-        error: connectionTest.message,
-      });
-    }
-
-    // Test sending a check-in email. The code is random and never stored,
-    // so a reply to it is simply unrecognised.
-    const emailSent = await emailService.sendCheckinEmail(
-      userEmail,
-      formatCode(generateCode()),
-    );
-
-    res.json({
-      success: emailSent,
-      message: emailSent
-        ? "Test email sent successfully"
-        : "Failed to send test email",
-      connectionTest: connectionTest,
-    });
-  } catch (error) {
-    console.error("Email test error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Email test failed",
-      error: error.message,
-    });
-  }
-});
-
-// Reset endpoint to clear deadman data after activation
-router.post("/reset", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-
-    // The fire record is persisted; forget it or it comes back after the
-    // next restart.
-    try {
-      await userService.clearTriggeredHistory(req.user.userId);
-    } catch (error) {
-      console.error(`❌ RESET: Could not clear fire record for ${userEmail}:`, error);
-    }
-
-    // Clear any active deadman switch
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-    }
-
-    // Clear stored emails
-    if (userEmails.has(userEmail)) {
-      userEmails.delete(userEmail);
-    }
-
-    // Clear activation history
-    if (deadmanActivationHistory.has(userEmail)) {
-      deadmanActivationHistory.delete(userEmail);
-    }
-
-    const retired = await retireOperatorCodes(req.user.userId, "reset");
-
-    res.json({
-      success: true,
-      message: "Deadman switch data has been reset successfully",
-      cleared: {
-        activeSwitch: true,
-        emails: true,
-        activationHistory: true,
-        codes: retired,
-      },
-    });
-  } catch (error) {
-    console.error("Error resetting deadman data:", error);
-    res.status(500).json({
-      message: "Failed to reset deadman data",
-      error: error.message,
-    });
-  }
 });
 
 // ---- Timers (v2.2.0: one implementation for arming, check-in, recovery) ----
@@ -3365,27 +3119,18 @@ async function handleInbound(parsed, meta = {}) {
     senderCodes.find((r) => OPERATOR_KINDS.has(r.kind)) ||
     senderCodes.find((r) => r.kind === "warning-ack") ||
     senderCodes[0];
+  // Wrong guesses are counted for the log, and never retire a code. The
+  // sender address is not authenticated (no DKIM/DMARC check yet), so a
+  // retire-after-five rule let anyone spoofing the operator's address cancel
+  // every new check-in code before the operator could answer — and fire the
+  // switch on a living operator (security sweep, 2026-10-04). Guessing gains
+  // nothing: a hit still needs the 8-character code AND a matching sender.
   const attempts = await userService.bumpFailedAttempts(target.id);
   console.warn(
-    `🚫 INBOUND: wrong code from ${OPERATOR_KINDS.has(target.kind) ? from : "recipient " + hashEmail(from).slice(0, 8)} (attempt ${attempts}/${MAX_FAILED_ATTEMPTS} against live ${target.kind} code)`,
+    `🚫 INBOUND: wrong code from ${OPERATOR_KINDS.has(target.kind) ? from : "recipient " + hashEmail(from).slice(0, 8)} (${attempts} wrong so far against a live ${target.kind} code; codes are never cancelled by wrong guesses)`,
   );
-  if (attempts >= MAX_FAILED_ATTEMPTS) {
-    await userService.retireCode(target.id);
-    const reissued = await reissueFor(target, { why: "wrong-guess lockout" });
-    if (receiptOnce(target.id, "lockout")) {
-      await emailService.sendReceipt(
-        from,
-        "That Deploy code didn't match",
-        reissued
-          ? `That code didn't match. After ${MAX_FAILED_ATTEMPTS} wrong tries it was cancelled — a fresh email with a new code is on its way.`
-          : `That code didn't match. After ${MAX_FAILED_ATTEMPTS} wrong tries it was cancelled; a new one will come with the next scheduled email.`,
-        threading,
-      );
-    }
-    return { action: "wrong-code", attempts, lockedOut: true, reissued };
-  }
   if (receiptOnce(target.id, "wrong")) {
-    await emailService.sendReceipt(from, "That Deploy code didn't match", "That code didn't match.", threading);
+    await emailService.sendReceipt(from, "That Deploy code didn't match", "That code didn't match. Please check it and reply again.", threading);
   }
   return { action: "wrong-code", attempts, lockedOut: false };
 }
@@ -3439,189 +3184,6 @@ function startInboundMail() {
     })
     .catch((error) => console.error("❌ IMAP: failed to start:", error));
 }
-
-// Debug endpoints for troubleshooting
-router.get("/debug/active-switches", authenticateToken, (req, res) => {
-  const userEmail = req.user.email;
-  const switchData = activeDeadmanSwitches.get(userEmail);
-
-  res.json({
-    userEmail,
-    hasActiveSwitch: !!switchData,
-    switchData: switchData
-      ? {
-          lastActivity: switchData.lastActivity,
-          nextCheckin: switchData.nextCheckinTime,
-          hasCheckinTimer: !!switchData.checkinTimer,
-          hasDeadmanTimer: !!switchData.deadmanTimer,
-          sessionToken: switchData.sessionToken,
-          emailCount: switchData.settings.emails
-            ? switchData.settings.emails.length
-            : 0,
-        }
-      : null,
-    userEmailsCount: (userEmails.get(userEmail) || []).length,
-    inbound: inboundStatus(),
-  });
-});
-
-router.get("/debug/activation-history", authenticateToken, (req, res) => {
-  const userEmail = req.user.email;
-  const history = deadmanActivationHistory.get(userEmail);
-
-  res.json({
-    userEmail,
-    activationHistory: history || null,
-  });
-});
-
-// Nuclear reset endpoint - wipes requesting user's data completely
-router.post("/nuclear-reset", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const userId = req.user.userId;
-
-    console.log(`💥 NUCLEAR-RESET: Starting complete wipe for ${userEmail}`);
-
-    // 1. Clear in-memory data for this user only
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-    }
-    userEmails.delete(userEmail);
-    deadmanActivationHistory.delete(userEmail);
-    console.log(`💥 NUCLEAR-RESET: Cleared memory for ${userEmail}`);
-
-    // Every code this user's emails ever carried, operator- and
-    // beneficiary-side, stops working (same cascade as delete-account).
-    try {
-      const n = await userService.retireCodes({ userId });
-      console.log(`💥 NUCLEAR-RESET: Retired ${n} live code(s)`);
-    } catch (error) {
-      console.error(`💥 NUCLEAR-RESET: Could not retire codes:`, error);
-    }
-
-    // 2. Clear database session
-    try {
-      await userService.deactivateSession(userId);
-      console.log(`💥 NUCLEAR-RESET: Database session deactivated`);
-    } catch (error) {
-      console.log(`💥 NUCLEAR-RESET: No database session to deactivate`);
-    }
-
-    console.log(`💥 NUCLEAR-RESET: Complete reset for ${userEmail}`);
-
-    res.json({
-      success: true,
-      message: "NUCLEAR RESET COMPLETE. Your deadman switch data has been wiped. You can now start completely fresh.",
-    });
-  } catch (error) {
-    console.error("❌ NUCLEAR-RESET ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Simple endpoint to force deactivation and clear all data
-router.post("/force-clear", authenticateToken, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const userId = req.user.userId;
-    const { password } = req.body;
-
-    console.log(`🧹 FORCE-CLEAR: Request from ${userEmail}`);
-
-    if (!password) {
-      return res
-        .status(400)
-        .json({ message: "Password required for database clearing" });
-    }
-
-    // Clear active switch from memory
-    if (activeDeadmanSwitches.has(userEmail)) {
-      const switchData = activeDeadmanSwitches.get(userEmail);
-      if (switchData.checkinTimer) clearInterval(switchData.checkinTimer);
-      if (switchData.deadmanTimer) clearTimeout(switchData.deadmanTimer);
-      activeDeadmanSwitches.delete(userEmail);
-      console.log(`🧹 FORCE-CLEAR: Cleared active switch from memory`);
-    }
-
-    // Clear all related data
-    userEmails.delete(userEmail);
-    deadmanActivationHistory.delete(userEmail);
-    retireOperatorCodes(userId, "force-clear");
-
-    // Clear database emails by updating user data with empty emails
-    try {
-      const userData = await userService.getUserData(userId, password, null);
-      if (userData) {
-        // Create updated user data with empty emails
-        const updatedUserData = {
-          ...userData,
-          deadmanSettings: {
-            ...userData.deadmanSettings,
-            emails: [],
-          },
-        };
-
-        // Update the database
-        await userService.updateUserData(
-          userId,
-          password,
-          null,
-          updatedUserData,
-        );
-        console.log(`🧹 FORCE-CLEAR: Cleared emails from database`);
-      }
-    } catch (error) {
-      console.log(
-        `🧹 FORCE-CLEAR: Error clearing database emails:`,
-        error.message,
-      );
-    }
-
-    // Deactivate database session
-    try {
-      await userService.deactivateSession(userId);
-      console.log(`🧹 FORCE-CLEAR: Deactivated database session`);
-    } catch (error) {
-      console.log(`🧹 FORCE-CLEAR: No database session to deactivate`);
-    }
-
-    console.log(`🧹 FORCE-CLEAR: Complete cleanup for ${userEmail}`);
-
-    res.json({
-      success: true,
-      message:
-        "All deadman switch data cleared including database emails. You can now start fresh.",
-    });
-  } catch (error) {
-    console.error("❌ FORCE-CLEAR ERROR:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test endpoint for time interval validation
-router.post("/test/validate-interval", (req, res) => {
-  const { interval, isInactivityPeriod = false } = req.body;
-
-  try {
-    const validation = validateTimeInterval(interval, isInactivityPeriod);
-
-    res.json({
-      success: true,
-      interval: interval,
-      isInactivityPeriod: isInactivityPeriod,
-      validation: validation,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
 
 module.exports = router;
 // For server.js: the sandbox test hook and the config-save reconfigure.

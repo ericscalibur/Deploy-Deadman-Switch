@@ -45,7 +45,8 @@ class UserService {
     return new Promise(async (resolve, reject) => {
       try {
         const salt = crypto.generateSalt();
-        const passwordHash = crypto.hashPassword(password, salt);
+        // Async PBKDF2: signup must not block the event loop (timers, IMAP).
+        const passwordHash = await crypto.hashPasswordAsync(password, salt);
 
         // Insert user
         const db = this.db;
@@ -133,13 +134,21 @@ class UserService {
             reject(new Error("Invalid credentials"));
           } else {
             try {
-              const isValid = crypto.verifyPassword(
+              const isValid = await crypto.verifyPasswordAsync(
                 password,
                 user.password_hash,
                 user.salt,
               );
 
               if (isValid) {
+                // v2.3.0 key separation: an account whose stored hash is
+                // still the legacy data key gets its data re-encrypted under
+                // the new data key and its hash replaced, now, while the
+                // password is in hand. Idempotent if interrupted.
+                if (crypto.needsRehash(user.password_hash)) {
+                  await this._migrateUserKeys(user.id, password, user.salt);
+                }
+
                 // Update last login
                 this.db.run(
                   "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
@@ -170,6 +179,20 @@ class UserService {
         },
       );
     });
+  }
+
+  async _migrateUserKeys(userId, password, salt) {
+    const data = await this.getUserData(userId, password, salt);
+    const hasData = await this._get(
+      "SELECT id FROM encrypted_user_data WHERE user_id = ?",
+      [userId],
+    );
+    if (hasData) {
+      await this.updateUserData(userId, password, salt, data);
+    }
+    const newHash = await crypto.hashPasswordAsync(password, salt);
+    await this._run("UPDATE users SET password_hash = ? WHERE id = ?", [newHash, userId]);
+    console.log(`🔐 KEYS: user ${userId} migrated to separate login and data keys`);
   }
 
   // Get decrypted user data
@@ -978,6 +1001,19 @@ class UserService {
         },
       );
     });
+  }
+
+  async countUsers() {
+    const row = await this._get("SELECT COUNT(*) AS n FROM users");
+    return row ? row.n : 0;
+  }
+
+  // Password check without loading data (re-authentication for destructive
+  // actions such as disarming the switch).
+  async checkPassword(userId, password) {
+    const user = await this._get("SELECT password_hash, salt FROM users WHERE id = ?", [userId]);
+    if (!user || !password) return false;
+    return crypto.verifyPasswordAsync(password, user.password_hash, user.salt);
   }
 
   // Get user by ID

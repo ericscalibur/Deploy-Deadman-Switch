@@ -8,7 +8,8 @@
 //
 // "full": deploy → arming by reply → first contact → beneficiary ack →
 //   periodic check-in by reply → restart mid-cycle → reply processed once →
-//   wrong code ×5 → lockout + reissue → stale code → expired + fresh email →
+//   forged wrong codes never cancel → reply to the older of two emails →
+//   retired code → expired + fresh email →
 //   silence → warning → beneficiary warning-ack by reply → CRITICAL. Asserts
 //   no http link in any operator/beneficiary email except CRITICAL's tool links.
 // "upgrade": first start after v2.2.0 on a pre-upgrade-shaped DB → coded
@@ -236,12 +237,28 @@ function reply(from, code, m, extra = {}) {
 
 // ---- scenario steps ----
 async function deployAndArm() {
+  // Anonymous requests must learn nothing (v2.2.4).
+  for (const [m, p] of [["GET", "/deadman/debug/status"], ["GET", "/deadman/test-intervals"], ["POST", "/deadman/emails/fetch"]]) {
+    const anon = await fetch(base + p, { method: m, headers: { "Content-Type": "application/json" }, body: m === "POST" ? "{}" : undefined });
+    assert(anon.status === 401 || anon.status === 404, `anonymous ${m} ${p} refused (${anon.status})`);
+  }
   let r = await api("POST", "/deadman/signup", { email: OP, password: "pw-e2e-1234" });
-  assert(r.status === 201 || r.status === 409, "signup");
+  assert(r.status === 201 || r.status === 403, "signup");
+  // One operator per install; a comma-list "address" is never accepted.
+  const second = await fetch(base + "/deadman/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "intruder@example.net", password: "longenough1" }) });
+  assert(second.status === 403, `a second signup is refused (${second.status})`);
+  const multi = await fetch(base + "/deadman/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "a@x.io, b@y.io", password: "longenough1" }) });
+  assert(multi.status === 400, `comma-separated signup address refused (${multi.status})`);
   r = await api("POST", "/deadman/login", { email: OP, password: "pw-e2e-1234" });
   assert(r.status === 200, "login");
   r = await api("POST", "/deadman/emails", { emailAddress: BEN, emailContent: "Hello Ben, the vault is under the floor.", emailIndex: null, password: "pw-e2e-1234", emailPayload: "LEGACY-TEST-PAYLOAD" });
   assert(r.status === 200, "add recipient");
+  r = await api("GET", "/deadman/debug/status");
+  assert(r.status === 200 && !JSON.stringify(r.json).includes(BEN), "debug/status (logged in) never contains a recipient address");
+  r = await api("POST", "/deadman/emails/fetch", { password: "pw-e2e-1234" });
+  assert(r.status === 200 && r.json.emails.length === 1, "emails/fetch returns the operator's own recipients");
+  r = await api("GET", "/deadman/emails?password=pw-e2e-1234");
+  assert(r.status === 400, "password-in-URL GET refused");
   r = await api("GET", "/deadman/inbound-status");
   assert(r.status === 200 && r.json.testHooks === true, "inbound-status reachable, test hooks on");
   r = await api("POST", "/deadman/activate", { checkinInterval: "1-minutes", inactivityPeriod: "3-minutes", password: "pw-e2e-1234" });
@@ -324,42 +341,35 @@ async function periodicAndRestart() {
 }
 
 async function lockoutAndExpiry() {
-  // wait for the next check-in email so a live code exists to guess against
+  // Wrong guesses from the operator's address (which anyone can forge) must
+  // never cancel the live code (v2.3.0 — the old five-strike lockout let a
+  // spoofer cancel every check-in code and fire the switch).
   const c2 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "second periodic check-in email", 120000);
   const codeD = codeOf(c2);
   let res;
-  for (let i = 1; i <= 5; i++) {
-    // valid-alphabet codes that are simply not the live one
-    res = await inject(eml({ from: OP, to: DEPLOY, subject: "Re: " + subj(c2), body: `WRNG-CD${i + 1}X` }));
+  for (let i = 1; i <= 7; i++) {
+    res = await inject(eml({ from: OP, to: DEPLOY, subject: "Re: " + subj(c2), body: `WRNG-CD${(i % 8) + 2}X` }));
+    assert(res.action === "wrong-code" && res.lockedOut === false, `wrong guess ${i} counted, code not cancelled`);
   }
-  assert(res.action === "wrong-code" && res.lockedOut === true && res.reissued === true, "5th wrong code → lockout + reissue");
-  const fresh = await waitMail((m) => to(m) === OP && isCheckinMail(m), "reissued check-in email after lockout", 30000);
-  const codeE = codeOf(fresh);
-  assert(codeE !== codeD, "reissued code differs");
-  await sleep(1200); // REISSUE_MIN_GAP_MS
-  // locked-out code → expired + fresh email (reissue)
+  await waitMail((m) => to(m) === OP && /didn't match/.test(subj(m)), "one didn't-match receipt");
   res = await inject(reply(OP, formatCode(codeD), c2));
-  assert(res.action === "expired" && res.reissued === true, "locked-out code → expired + reissue");
-  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "expired receipt");
-  const fresh2 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "fresh check-in after expired reply", 30000);
-  // E (from the lockout reissue) is still live alongside fresh2's code:
-  // an older unanswered code must keep working.
-  res = await inject(reply(OP, formatCode(codeE), fresh));
-  assert(res.action === "checkin", "older outstanding code still checks in");
-  // …and that check-in retired every other outstanding code.
-  res = await inject(reply(OP, formatCode(codeOf(fresh2)), fresh2));
-  assert(res.action === "expired", "other outstanding code retired by the check-in");
-  await sleep(1200);
-  res = await inject(reply(OP, formatCode(codeE), fresh)); // E is used → repeat
-  assert(res.action === "repeat", "used code → repeat, no reissue");
-  // two ticks unanswered: replying to the OLDER email must work (the live
+  assert(res.action === "checkin", "the real code still checks in after seven forged wrong guesses");
+  await sleep(1200); // REISSUE_MIN_GAP_MS
+  // Two ticks unanswered: replying to the OLDER email must work (the live
   // trap of 2026-09-18), and the newer one is then retired.
   const c3 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "next periodic check-in", 120000);
   const c4 = await waitMail((m) => to(m) === OP && isCheckinMail(m), "following periodic check-in", 120000);
   res = await inject(reply(OP, formatCode(codeOf(c3)), c3));
   assert(res.action === "checkin", "reply to the older of two check-in emails checks in");
+  // The newer code was retired by that check-in → expired + a fresh email.
   res = await inject(reply(OP, formatCode(codeOf(c4)), c4));
-  assert(res.action === "expired" && res.switchGone === false, "the newer email's code is retired by that check-in");
+  assert(res.action === "expired" && res.switchGone === false && res.reissued === true, "retired code → expired + reissue");
+  await waitMail((m) => to(m) === OP && /has expired/.test(subj(m)), "expired receipt");
+  const fresh = await waitMail((m) => to(m) === OP && isCheckinMail(m), "fresh check-in after expired reply", 30000);
+  res = await inject(reply(OP, formatCode(codeOf(fresh)), fresh));
+  assert(res.action === "checkin", "fresh code after expiry checks in");
+  res = await inject(reply(OP, formatCode(codeD), c2));
+  assert(res.action === "repeat", "used code → repeat, no reissue");
   return c4;
 }
 
@@ -382,6 +392,7 @@ async function silenceToFire(lastCheckin) {
   const crit = await waitMail((m) => to(m) === BEN && /^CRITICAL:/.test(subj(m)), "CRITICAL trigger email", 200000);
   assert(/LEGACY-TEST-PAYLOAD/.test(crit.parsed.text), "CRITICAL carries the payload");
   assert(/legacy_encryption/i.test(crit.parsed.text), "CRITICAL keeps its external tool links");
+  assert(/follow-through to the advance warning/.test(crit.parsed.text), "CRITICAL refers to the warning this recipient received");
   await sleep(1500);
   r = await api("GET", "/deadman/deadman-status");
   assert(r.json.triggered === true, "deadman-status: triggered");
@@ -425,6 +436,7 @@ async function failsafe() {
   await startServer({ IMAP_HOST: "", IMAP_USER: "", IMAP_PASS: "" });
   const crit = await waitMail((m) => to(m) === BEN && /^CRITICAL:/.test(subj(m)), "CRITICAL after hold released", 120000);
   assert(!!crit, "fired once the hold was gone");
+  assert(!/advance warning/.test(crit.parsed.text), "CRITICAL does not mention a warning that was never sent");
 }
 
 // First start after the v2.2.0 upgrade: an armed switch (stale missed
@@ -462,6 +474,14 @@ async function upgrade() {
   await stopServer();
   await startServer();
   assert(!(await waitForLog(/UPGRADE: first start/, 5000)), "migration does not run twice");
+  // Abort needs the password, and tells the operator by email.
+  cookie = "";
+  r = await api("POST", "/deadman/login", { email: OP, password: "pw-e2e-1234" });
+  r = await api("POST", "/deadman/deactivate", {});
+  assert(r.status === 403, "abort without the password refused");
+  r = await api("POST", "/deadman/deactivate", { password: "pw-e2e-1234" });
+  assert(r.status === 200, "abort with the password accepted");
+  await waitMail((m) => to(m) === OP && /was aborted/.test(subj(m)), "abort notice to the operator");
 }
 
 (async () => {

@@ -190,3 +190,46 @@ describe("deleteUser cascades", () => {
     assert.strictEqual(await svc.getBeneficiaryPing(u.userId, "hash-z"), null);
   });
 });
+
+describe("v2.3.0 key migration at login", () => {
+  const c = require("../database/crypto");
+  const nodeCrypto = require("crypto");
+
+  function legacyEncrypt(data, password, salt) {
+    const key = c.deriveKey(password, salt);
+    const iv = nodeCrypto.randomBytes(16);
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(Buffer.from(salt, "base64"));
+    let enc = cipher.update(JSON.stringify(data), "utf8", "base64");
+    enc += cipher.final("base64");
+    return { encrypted: enc, iv: iv.toString("base64"), authTag: cipher.getAuthTag().toString("base64"), algorithm: "aes-256-gcm" };
+  }
+
+  test("an account created before 2.3.0 is re-keyed on its next login", async () => {
+    const salt = c.generateSalt();
+    const pw = "legacy-password-1";
+    const legacyHash = c.deriveKey(pw, salt).toString("base64");
+    const { lastID: uid } = await svc._run(
+      "INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
+      ["legacy@example.com", legacyHash, salt],
+    );
+    const emails = legacyEncrypt([{ address: "ben@example.com", content: "hi" }], pw, salt);
+    await svc._run(
+      "INSERT INTO encrypted_user_data (user_id, encrypted_emails, encrypted_settings, encrypted_checkin_tokens, iv) VALUES (?, ?, ?, ?, ?)",
+      [uid, JSON.stringify(emails), JSON.stringify(legacyEncrypt({ a: 1 }, pw, salt)), JSON.stringify(legacyEncrypt({}, pw, salt)), emails.iv],
+    );
+
+    await assert.rejects(() => svc.authenticateUser("legacy@example.com", "wrong"));
+    const user = await svc.authenticateUser("legacy@example.com", pw);
+    assert.equal(user.emails[0].address, "ben@example.com");
+
+    const row = await svc._get("SELECT password_hash FROM users WHERE id = ?", [uid]);
+    assert.ok(row.password_hash.startsWith("v2$"), "hash replaced");
+    const data = await svc._get("SELECT encrypted_emails FROM encrypted_user_data WHERE user_id = ?", [uid]);
+    assert.equal(JSON.parse(data.encrypted_emails).v, 2, "data re-encrypted under the v2 key");
+
+    // Second login works and changes nothing further.
+    const again = await svc.authenticateUser("legacy@example.com", pw);
+    assert.equal(again.emails[0].address, "ben@example.com");
+  });
+});

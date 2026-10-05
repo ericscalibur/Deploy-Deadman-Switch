@@ -63,11 +63,48 @@ automatically with the next version bump.
   beneficiary threads without hiding them from the reader, plus a
   `+deploy` Reply-To on beneficiary emails to give that filter a handle.
 
-## Next up (post-v2.2.0)
+## Shipped in v2.3.0 (security release, 2026-10-04)
+
+- **Unauthenticated `/debug/status` returned every armed switch's decrypted
+  recipient list** (addresses, message bodies, payloads) to anyone who could
+  reach the dashboard. Now login-only, scoped to the caller, and never
+  includes recipients; the other unauthenticated test routes are gone.
+- **The stored password hash was the data-encryption key.** Separate HKDF
+  keys now; accounts are re-keyed at their next login.
+- **Forged wrong guesses could cancel check-in codes** and fire the switch
+  on a living operator. Wrong guesses no longer cancel anything.
+- **Open signup** let anyone who reached the dashboard send mail from the
+  owner's account. One operator per install; single-address validation;
+  `/debug/test-email` removed.
+- Login throttling and async password hashing; Abort needs the password and
+  emails the operator; unused cookie-only destructive routes removed;
+  password and recipient list moved to per-tab session storage; recipient
+  addresses kept out of the audit log and SMTP error logs; `.env` and data
+  files owner-only; config secrets off the process list; the recipient
+  list is fetched by POST so the password is never in a URL.
+- Plus the two staged copy fixes below.
+
+### Staged copy fixes folded into v2.3.0
+
+- Dashboard opening copy: "Twelve minutes now is worth more than any
+  amount of reading" → "Test the entire sequence for yourself in as little
+  as 12 minutes" (Eric, 2026-09-24).
+- CRITICAL email: "If you received an advance warning email recently, this
+  is the follow-through it announced" is now only said to a recipient who
+  actually got the warning — a warning went out on this switch and they
+  did not opt out of pre-trigger contact — as "It is the follow-through to
+  the advance warning you received recently." (Dale's Start9 test report,
+  2026-10-04; also covers a switch that fires after a restart.)
+
+## Next up (post-v2.3.0)
 
 - **DKIM/SPF verification of inbound replies** (`mailauth`) — the code is
   the secret and `From` must match today; signature checks are the next
-  hardening.
+  hardening. (Since v2.3.0 a forged sender can no longer cancel codes, so
+  this is defence in depth, not a hole.)
+- **SMTP/IMAP passwords in `settings.config`** are plaintext inside the
+  container (now owner-only files). Encrypting them under SECRET_KEY would
+  only matter if the DB leaked without `.env`; low priority.
 - **Bounced beneficiary pings as dead-address evidence** — bounces are
   currently only ignored.
 

@@ -233,3 +233,55 @@ describe("server-key envelope (SECRET_KEY encoding)", () => {
 
   process.env.SECRET_KEY = original;
 });
+
+// ---- v2.3.0 key separation ----
+describe("login verifier is independent of the data key", () => {
+  const nodeCrypto = require("crypto");
+  const c = require("../database/crypto");
+
+  test("the stored hash cannot decrypt the user's data", () => {
+    const salt = c.generateSalt();
+    const stored = c.hashPassword("hunter2-long", salt);
+    assert.ok(stored.startsWith("v2$"));
+    const blob = c.encryptData({ secret: "beneficiary@example.com" }, "hunter2-long", salt);
+    assert.equal(blob.v, 2);
+    const keyFromHash = Buffer.from(stored.slice(3), "base64");
+    const decipher = nodeCrypto.createDecipheriv("aes-256-gcm", keyFromHash, Buffer.from(blob.iv, "base64"));
+    decipher.setAAD(Buffer.from(salt, "base64"));
+    decipher.setAuthTag(Buffer.from(blob.authTag, "base64"));
+    assert.throws(() => {
+      decipher.update(blob.encrypted, "base64", "utf8");
+      decipher.final("utf8");
+    });
+    // …while the password still does.
+    assert.match(c.decryptData(blob, "hunter2-long", salt), /beneficiary/);
+  });
+
+  test("legacy hashes (pre-2.3.0, the raw PBKDF2 key) still verify and are flagged", async () => {
+    const salt = c.generateSalt();
+    const legacy = c.deriveKey("old-pass", salt).toString("base64");
+    assert.equal(c.needsRehash(legacy), true);
+    assert.equal(c.verifyPassword("old-pass", legacy, salt), true);
+    assert.equal(c.verifyPassword("wrong", legacy, salt), false);
+    assert.equal(await c.verifyPasswordAsync("old-pass", legacy, salt), true);
+    assert.equal(c.needsRehash(c.hashPassword("old-pass", salt)), false);
+  });
+
+  test("legacy blobs (no v field, keyed by the raw PBKDF2 key) still decrypt", () => {
+    const salt = c.generateSalt();
+    const key = c.deriveKey("old-pass", salt);
+    const iv = nodeCrypto.randomBytes(16);
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(Buffer.from(salt, "base64"));
+    let enc = cipher.update(JSON.stringify(["a@b.c"]), "utf8", "base64");
+    enc += cipher.final("base64");
+    const legacyBlob = { encrypted: enc, iv: iv.toString("base64"), authTag: cipher.getAuthTag().toString("base64"), algorithm: "aes-256-gcm" };
+    assert.deepEqual(c.decryptEmails(legacyBlob, "old-pass", salt), ["a@b.c"]);
+  });
+
+  test("a v2 hash of a different length never throws in comparison", () => {
+    const salt = c.generateSalt();
+    assert.equal(c.verifyPassword("x", "v2$AAAA", salt), false);
+    assert.equal(c.verifyPassword("x", "AAAA", salt), false);
+  });
+});

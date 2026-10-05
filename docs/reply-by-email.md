@@ -57,8 +57,13 @@ One path. No "or".
   too, and the switch fired on a living operator who had replied three
   times. All outstanding codes went to the same inbox for the same
   purpose, so keeping them live is no weaker.
-- After 5 wrong codes against a live code, it is retired and a fresh
-  email is issued (limits brute force to 5 × 2^-40 per email).
+- ~~After 5 wrong codes against a live code, it is retired and a fresh
+  email is issued.~~ **Amended 2026-10-04 (security sweep):** wrong codes
+  are counted and answered once, but never retire a code. `From` is not
+  authenticated, so the lockout let anyone forging the operator's address
+  cancel every new check-in code before the operator could answer — and
+  fire the switch on a living operator. Brute force was never the risk:
+  a hit still needs the 8-character code and a matching sender.
 
 ## Threat model — what must hold
 
