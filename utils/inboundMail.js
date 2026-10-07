@@ -246,12 +246,27 @@ class InboundMail {
         await sleep(POLL_MS);
         continue;
       }
+      this._established = false;
       try {
         await this._serve(cfg, gen);
         backoff = RECONNECT_MIN_MS; // clean close → quick retry
       } catch (error) {
         if (this.stopped || gen !== this.generation) break;
-        await this._markDown(error);
+        if (this._established) {
+          // A working connection dropped. Gmail closes long-lived IMAP
+          // sessions as a matter of routine, so this is not yet an outage:
+          // reconnect at the minimum delay and mark down only if that fails
+          // (from the moment of the drop). Before v2.3.1 every drop counted
+          // as an outage and doubled the backoff, which nothing reset while
+          // the process stayed up — after a few days each routine drop left
+          // the reader dark for ~10 minutes and raised the alert.
+          this.state.connected = false;
+          this._droppedAt = new Date().toISOString();
+          backoff = RECONNECT_MIN_MS;
+          console.warn(`⚠️ IMAP connection dropped (${describeError(error)}); reconnecting`);
+        } else {
+          await this._markDown(error);
+        }
       }
       await this._closeClient();
       if (this.stopped || gen !== this.generation) break;
@@ -297,6 +312,7 @@ class InboundMail {
     // been processed.
     await this._syncAll(client, folders);
     await this._markUp();
+    this._established = true;
 
     while (!this.stopped && gen === this.generation && client.usable) {
       // Sleep until the poll interval passes, an 'exists' event arrives, or
@@ -452,7 +468,7 @@ class InboundMail {
     this.state.connected = false;
     this.state.error = describeError(error);
     if (!this.state.downSince) {
-      this.state.downSince = new Date().toISOString();
+      this.state.downSince = this._droppedAt || new Date().toISOString();
       try { await this.store.set("imap:down_since", this.state.downSince); } catch (_) {}
       console.error(`❌ IMAP DOWN since ${this.state.downSince}: ${this.state.error}`);
     } else {
@@ -462,12 +478,13 @@ class InboundMail {
     notifyThrottled(
       "imap-down",
       60 * 60 * 1000,
-      `Deploy cannot read its mailbox (${this.state.error}). Replies to check-in emails are NOT being received. Check in from the dashboard and fix the IMAP settings.`,
+      `Deploy cannot read its mailbox (${this.state.error}). Replies to check-in emails are NOT being received. Fix the IMAP settings, or abort the switch from the dashboard.`,
       { priority: "urgent", tags: "rotating_light,mailbox" },
     );
   }
 
   async _markUp() {
+    this._droppedAt = null;
     this.state.connected = true;
     this.state.error = null;
     this.state.lastCheckedAt = new Date().toISOString();

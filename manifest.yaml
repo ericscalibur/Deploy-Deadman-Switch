@@ -1,7 +1,18 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.3.0
+version: 2.3.1
 release-notes: |
+  - (2.3.1) Fix: false "your check-in replies are not being received"
+    warnings. Gmail routinely closes long-lived mailbox connections; Deploy
+    reconnected each time, but waited a little longer after every drop and
+    never reset the wait while it stayed up. After a few days each routine
+    drop left the mailbox unread for about 10 minutes and raised the alarm.
+    A dropped connection is now reconnected within 15 seconds and only
+    counts as an outage if that fails, and the daily alert waits until an
+    outage is 15 minutes old. Replies were never lost (they were read on
+    reconnect) and the safety hold was never triggered by these gaps.
+  - Copy: the push alert for an unreadable mailbox no longer suggests
+    checking in from the dashboard (that button was removed in 2.2.0).
   - (2.3.0) SECURITY RELEASE — update promptly, then follow the two steps
     at the end of these notes.
   - Fix (critical): the unauthenticated debug page /deadman/debug/status

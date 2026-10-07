@@ -110,6 +110,10 @@ const receiptsSent = new Set(); // `${codeId}:${type}`
 // inbox, normal timing resumes and the alert says so.
 const INBOUND_HOLD_CAP_MS = 7 * 24 * 60 * 60 * 1000;
 const INBOUND_FIRE_RETRY_MS = 10 * 60 * 1000;
+// The health sweep alerts only on an outage at least this old; a reconnect
+// that fails once and then succeeds is not worth an email. A held warning or
+// fire still alerts at once (registerMissedCheckin / fire path).
+const INBOUND_ALERT_GRACE_MS = 15 * 60 * 1000;
 const INBOUND_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
 const lastInboundAlertAt = new Map(); // userEmail -> ms
 
@@ -730,7 +734,7 @@ async function registerMissedCheckin(userEmail, switchData) {
   if (action === "send") {
     // Fail-safe: while Deploy knows it cannot read its own inbox, the
     // operator's replies are going unseen. The miss is still counted (the
-    // operator has other duties: the dashboard button works), but no human
+    // operator has other duties), but no human
     // is told "the operator has stopped responding" on the strength of it.
     const hold = inboundHold(switchData);
     if (hold.held) {
@@ -805,7 +809,7 @@ async function inboundHealthSweep() {
     for (const [userEmail, switchData] of activeDeadmanSwitches.entries()) {
       if (!st.configured) {
         maybeSendInboundDownAlert(userEmail, switchData, {});
-      } else if (st.downSince) {
+      } else if (st.downSince && Date.now() - new Date(st.downSince).getTime() >= INBOUND_ALERT_GRACE_MS) {
         const hold = inboundHold(switchData);
         maybeSendInboundDownAlert(userEmail, switchData, hold.downSince ? hold : { downSince: st.downSince });
       }
