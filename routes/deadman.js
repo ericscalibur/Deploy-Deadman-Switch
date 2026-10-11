@@ -1440,6 +1440,142 @@ router.post("/logout", (req, res) => {
   });
 });
 
+// ---- Forgot Password (v2.3.2) ----
+//
+// The password is the only key to the password-encrypted copy of the
+// operator's data, so nothing can recover it. A reset proves control of the
+// operator's mailbox (a code emailed there, typed on this page — not replied,
+// so it works while IMAP is down) and re-keys the account under a new
+// password. The switch itself is never touched: a running switch keeps its
+// timers, codes and SECRET_KEY envelope, and the dashboard copy of its
+// recipients and messages is rebuilt from that envelope (Eric's call,
+// 2026-10-11 — inbox control can already keep a switch alive indefinitely;
+// it now also reads the recipient list). With no switch running there is
+// nothing to rebuild from and the account starts empty.
+//
+// The emails carry no link and no address for Deploy. Responses never say
+// whether an address is the operator's.
+const RESET_CODE_TTL_MS = 30 * 60 * 1000;
+const RESET_REQUEST_GAP_MS = 5 * 60 * 1000;
+const lastResetRequestAt = new Map(); // userId -> ms
+const resetGuard = createLoginGuard();
+
+router.post("/password-reset/request", async (req, res) => {
+  const generic = {
+    success: true,
+    message:
+      "If that is the operator address, a reset code has been emailed to it. It expires in 30 minutes. Codes are sent at most once every 5 minutes.",
+  };
+  try {
+    const email = String((req.body && req.body.email) || "").trim();
+    if (!email) return res.status(400).json({ message: "Enter your email address" });
+    const user = await userService.findUserByEmail(email);
+    if (!user) return res.json(generic);
+    const last = lastResetRequestAt.get(user.id) || 0;
+    if (Date.now() - last < RESET_REQUEST_GAP_MS) return res.json(generic);
+    lastResetRequestAt.set(user.id, Date.now());
+
+    await userService.retireCodes({ userId: user.id, kind: "password-reset" });
+    const { code } = await userService.issueCode({ kind: "password-reset", userId: user.id });
+    const sent = await emailService.sendPasswordResetCode(
+      user.email,
+      formatCode(code),
+      RESET_CODE_TTL_MS / 60000,
+    );
+    await userService.logAudit(user.id, "PASSWORD_RESET_REQUESTED", sent ? "Reset code emailed" : "Reset code email FAILED", req.ip, req.get("User-Agent"));
+    console.log(`🔑 RESET: password reset code ${sent ? "emailed" : "could NOT be emailed"} to the operator`);
+    if (!sent) {
+      // Saying so leaks nothing an attacker can use (the mail is down for
+      // everyone) and saves the operator from waiting for a code.
+      lastResetRequestAt.delete(user.id);
+      return res.status(503).json({
+        message: "Deploy could not send email right now, so no code went out. Check the mail settings and try again.",
+      });
+    }
+    res.json(generic);
+  } catch (error) {
+    console.error("❌ RESET: request failed:", error.message);
+    res.status(500).json({ message: "Could not start a password reset" });
+  }
+});
+
+router.post("/password-reset/confirm", async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body || {};
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ message: "Email, code and new password required" });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+    const wait = resetGuard.retryAfter(email);
+    if (wait > 0) return tooMany(res, wait, "wrong reset codes for this account");
+
+    const invalid = () => {
+      resetGuard.recordFailure(email);
+      return res.status(400).json({ message: "That code is not valid. Check it, or request a new one." });
+    };
+    const user = await userService.findUserByEmail(email);
+    if (!user) return invalid();
+    const row = await userService.findLiveResetCode(user.id, hashCode(code));
+    if (!row) return invalid();
+    const createdAt = parseDbTimestamp(row.created_at).getTime();
+    if (!(Date.now() - createdAt < RESET_CODE_TTL_MS)) {
+      await userService.retireCode(row.id);
+      return res.status(400).json({ message: "That code has expired. Request a new one." });
+    }
+
+    const release = loginGuard.acquire();
+    if (!release) return tooMany(res, 5000, "requests at once");
+    let switchRunning = false;
+    try {
+      await userService.markCodeUsed(row.id);
+      await userService.retireCodes({ userId: user.id, kind: "password-reset" });
+
+      // Rebuild the dashboard copy from the running switch, if any.
+      let userData = { emails: [], settings: {}, checkinTokens: {} };
+      const switchData = activeDeadmanSwitches.get(user.email);
+      if (switchData) {
+        switchRunning = true;
+        const s = switchData.settings || {};
+        userData = {
+          emails: getRecipientsFor(user.email, switchData),
+          settings: {
+            checkinMethod: s.checkinMethod || "email",
+            checkinInterval: s.checkinInterval,
+            inactivityPeriod: s.inactivityPeriod,
+            sessionToken: switchData.sessionToken,
+          },
+          checkinTokens: {},
+        };
+      }
+      await userService.resetPassword(user.id, String(newPassword), userData);
+    } finally {
+      release();
+    }
+    resetGuard.recordSuccess(email);
+    loginGuard.recordSuccess(email);
+    lastResetRequestAt.delete(user.id);
+
+    await userService.logAudit(user.id, "PASSWORD_RESET", switchRunning ? "Password reset; data rebuilt from running switch" : "Password reset; no switch running, data cleared", req.ip, req.get("User-Agent"));
+    console.log(`🔑 RESET: operator password reset (${switchRunning ? "rebuilt from the running switch" : "no switch running — account starts empty"})`);
+    emailService
+      .sendPasswordResetNotice(user.email, { switchRunning })
+      .catch((error) => console.error("❌ RESET: notice email failed:", error.message));
+
+    res.json({
+      success: true,
+      switchRunning,
+      message: switchRunning
+        ? "Password reset. Your switch was not changed. Log in with your new password."
+        : "Password reset. No switch was running, so your old saved recipients could not be restored. Log in with your new password.",
+    });
+  } catch (error) {
+    console.error("❌ RESET: confirm failed:", error.message);
+    res.status(500).json({ message: "Password reset failed" });
+  }
+});
+
 // User login endpoint (encrypted database)
 router.post("/login", async (req, res) => {
   try {
@@ -2986,9 +3122,13 @@ async function handleInbound(parsed, meta = {}) {
   const fromHash = hashEmail(from);
 
   // 1. A live code among the candidates?
+  // Password-reset codes are typed on the Forgot Password page, never
+  // replied: one arriving by mail is treated as no code at all (it is
+  // neither consumed nor answered).
   let live = null;
   for (const c of candidates) {
     live = await userService.findLiveCode(hashCode(c));
+    if (live && live.kind === "password-reset") live = null;
     if (live) break;
   }
 
@@ -3064,6 +3204,7 @@ async function handleInbound(parsed, meta = {}) {
   let stale = null;
   for (const c of candidates) {
     stale = await userService.findCodeByHash(hashCode(c));
+    if (stale && stale.kind === "password-reset") stale = null;
     if (stale) break;
   }
   if (stale) {

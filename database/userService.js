@@ -738,7 +738,7 @@ class UserService {
   // are outstanding — the oldest beyond that are retired.
   async issueCode({ kind, userId, recipientHash = null, ref = null }) {
     const codes = require("../utils/codes");
-    if (!["arming", "checkin", "ping-ack", "warning-ack"].includes(kind)) {
+    if (!["arming", "checkin", "ping-ack", "warning-ack", "password-reset"].includes(kind)) {
       throw new Error(`Unknown reply-code kind: ${kind}`);
     }
     const operatorKind = kind === "arming" || kind === "checkin";
@@ -1014,6 +1014,43 @@ class UserService {
     const user = await this._get("SELECT password_hash, salt FROM users WHERE id = ?", [userId]);
     if (!user || !password) return false;
     return crypto.verifyPasswordAsync(password, user.password_hash, user.salt);
+  }
+
+  // Operator account by address, case-insensitive (the address is typed on
+  // the Forgot Password page and may not match the signup capitalisation).
+  async findUserByEmail(email) {
+    return this._get(
+      "SELECT id, email, salt FROM users WHERE LOWER(email) = LOWER(?) AND is_active = 1",
+      [String(email || "").trim()],
+    );
+  }
+
+  // The live password-reset code with this hash for this user, if any.
+  async findLiveResetCode(userId, hash) {
+    return this._get(
+      `SELECT * FROM reply_codes
+        WHERE code_hash = ? AND user_id = ? AND kind = 'password-reset'
+          AND used_at IS NULL AND retired_at IS NULL`,
+      [hash, userId],
+    );
+  }
+
+  // Forgot Password (v2.3.2). The old password is gone, and with it the
+  // only key to the password-encrypted copy of the data, so the account is
+  // re-keyed from scratch: new salt, new login verifier, and `userData`
+  // (rebuilt by the caller from a running switch, or empty) written under
+  // the new data key. Data first, then the users row; if this is cut short
+  // between the two, a second reset starts over cleanly.
+  async resetPassword(userId, newPassword, userData) {
+    const salt = crypto.generateSalt();
+    const passwordHash = await crypto.hashPasswordAsync(newPassword, salt);
+    await this.updateUserData(userId, newPassword, salt, userData);
+    await this._run("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?", [
+      passwordHash,
+      salt,
+      userId,
+    ]);
+    return { salt };
   }
 
   // Get user by ID

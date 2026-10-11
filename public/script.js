@@ -73,6 +73,110 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+  // ---- Forgot Password (v2.3.2) ----
+  // Two steps on one panel: ask for a code (emailed, no link in it), then
+  // type it with the new password. Nothing here reveals whether an address
+  // is the operator's; the server answers the same either way.
+  const loginPanel = document.getElementById("login-panel");
+  const resetPanel = document.getElementById("reset-panel");
+  const resetRequestForm = document.getElementById("reset-request-form");
+  const resetConfirmForm = document.getElementById("reset-confirm-form");
+  const resetStatus = document.getElementById("reset-status");
+
+  function setResetStatus(text, isError = false) {
+    resetStatus.textContent = text || "";
+    resetStatus.classList.toggle("error", !!isError);
+  }
+
+  function showResetPanel(show) {
+    loginPanel.style.display = show ? "none" : "block";
+    resetPanel.style.display = show ? "block" : "none";
+    if (show) {
+      document.getElementById("reset-email").value =
+        document.getElementById("email").value;
+      resetRequestForm.style.display = "block";
+      resetConfirmForm.style.display = "none";
+      setResetStatus("");
+    }
+  }
+
+  document
+    .getElementById("forgot-password-link")
+    .addEventListener("click", (event) => {
+      event.preventDefault();
+      showResetPanel(true);
+    });
+  document
+    .getElementById("reset-back-link")
+    .addEventListener("click", (event) => {
+      event.preventDefault();
+      showResetPanel(false);
+    });
+
+  resetRequestForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = document.getElementById("reset-email").value.trim();
+    const button = document.getElementById("reset-request-button");
+    button.disabled = true;
+    try {
+      const response = await fetch("/deadman/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setResetStatus(data.message);
+        resetConfirmForm.style.display = "block";
+        document.getElementById("reset-code").focus();
+      } else {
+        setResetStatus(data.message || "Could not send a reset code", true);
+      }
+    } catch (error) {
+      setResetStatus("Could not reach Deploy. Try again.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  resetConfirmForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = document.getElementById("reset-email").value.trim();
+    const code = document.getElementById("reset-code").value.trim();
+    const newPassword = document.getElementById("reset-new-password").value;
+    const confirmPassword = document.getElementById(
+      "reset-confirm-password",
+    ).value;
+    if (newPassword !== confirmPassword) {
+      setResetStatus("The two passwords do not match.", true);
+      return;
+    }
+    const button = document.getElementById("reset-confirm-button");
+    button.disabled = true;
+    try {
+      const response = await fetch("/deadman/password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, newPassword }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        resetConfirmForm.reset();
+        showResetPanel(false);
+        switchToLoginMode();
+        document.getElementById("email").value = email;
+        document.getElementById("password").value = "";
+        alert(data.message);
+      } else {
+        setResetStatus(data.message || "Password reset failed", true);
+      }
+    } catch (error) {
+      setResetStatus("Could not reach Deploy. Try again.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   // Function to switch to login mode
   function switchToLoginMode() {
     authButton.dataset.mode = "login";

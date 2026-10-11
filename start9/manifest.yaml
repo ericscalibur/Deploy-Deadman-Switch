@@ -1,7 +1,19 @@
 id: deadman-switch
 title: "Deploy: Deadman Switch"
-version: 2.3.1
+version: 2.3.2
 release-notes: |
+  - (2.3.2) Forgot Password now works. It was a dead link. Your password
+    is the only key to your saved data, so it cannot be recovered, but you
+    can now set a new one: enter your address, Deploy emails you a reset
+    code, and you type it on the same page with your new password. The
+    email contains no link and no address for Deploy, so a compromised
+    mailbox does not point anyone to your dashboard or server. A running
+    switch is never changed by a reset; its recipients and messages are
+    restored to the dashboard from the switch itself. With no switch
+    running there is nothing to restore from, and you start with an empty
+    recipient list. You are emailed whenever a reset happens.
+  - Dashboard: the "test it in 12 minutes" advice moved to the end of the
+    introduction, marked [NOTICE].
   - (2.3.1) Fix: false "your check-in replies are not being received"
     warnings. Gmail routinely closes long-lived mailbox connections; Deploy
     reconnected each time, but waited a little longer after every drop and

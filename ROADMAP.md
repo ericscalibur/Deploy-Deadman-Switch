@@ -96,17 +96,14 @@ automatically with the next version bump.
   the advance warning you received recently." (Dale's Start9 test report,
   2026-10-04; also covers a switch that fires after a restart.)
 
-## Staged for the next release
+## Shipped in v2.3.2 (2026-10-11)
 
-- Dashboard intro copy (`public/index.html`, `#setup-page`): move the
-  "Before you deploy for real, run one full test…" paragraph from the top
-  of the intro to the end (after the address-confirmation paragraph that
-  ends "…until the deadman switch is triggered."), and prefix it with
-  `[NOTICE]`: "[NOTICE] Before you deploy for real, run one full test with
-  a 3-minute check-in and a 9-minute period of inactivity (the smallest
-  values allowed): deploy, reply to arm, reply to a check-in, then stay
-  silent and watch the warning and the trigger arrive. Test the entire
-  sequence for yourself in as little as 12 minutes." (Eric, 2026-10-07.)
+- **Forgot Password** (was a dead link): emailed code typed on the page,
+  no link or Deploy address in either email, switch never touched,
+  dashboard data rebuilt from the running switch's envelope. Sandbox
+  scenario `reset`.
+- Dashboard intro: the "Before you deploy for real…" paragraph moved to
+  the end of the introduction and prefixed `[NOTICE]` (Eric, 2026-10-07).
 
 ## Next up (post-v2.3.0)
 

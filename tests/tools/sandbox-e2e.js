@@ -16,6 +16,10 @@
 //   "Deploy was updated" check-in + re-sent ping, missed counter reset.
 // "failsafe": IMAP configured but unreachable → warning tick is HELD and the
 //   alert email goes out; then restart with IMAP unset → normal timing → fire.
+// "reset": Forgot Password on an armed switch → code by email (no link),
+//   replied code ignored, new password restores the recipient list from the
+//   running switch without touching it; a second reset with no switch
+//   running starts the account empty.
 //
 // Takes roughly 6 minutes (1-minute check-ins, 3-minute inactivity).
 
@@ -484,12 +488,75 @@ async function upgrade() {
   await waitMail((m) => to(m) === OP && /was aborted/.test(subj(m)), "abort notice to the operator");
 }
 
+async function passwordReset() {
+  const NEWPW = "new-pw-e2e-5678";
+  let r = await api("GET", "/deadman/timer-status");
+  const before = r.json;
+  assert(before.active && before.pending === false, "switch armed before the reset");
+
+  r = await api("POST", "/deadman/password-reset/request", { email: "nobody@example.net" });
+  const generic = r.json && r.json.message;
+  assert(r.status === 200 && /If that is the operator address/.test(generic), "unknown address gets the generic answer");
+  r = await api("POST", "/deadman/password-reset/request", { email: OP.toUpperCase() });
+  assert(r.status === 200 && r.json.message === generic, "operator address gets the same answer (case-insensitive)");
+  const resetMail = await waitMail((m) => to(m) === OP && /password reset code/i.test(subj(m)), "reset code email");
+  assertNoLinks(resetMail);
+  assert(!/localhost|3999/.test(resetMail.raw), "reset email names no Deploy address");
+  const codeR = codeOf(resetMail);
+  assert(!subj(resetMail).includes(formatCode(codeR)), "code is not in the subject");
+  r = await api("POST", "/deadman/password-reset/request", { email: OP });
+  assert(r.status === 200, "second request inside 5 minutes answered");
+  await sleep(2000);
+  assert(!(await readMail()).some((m) => !seen.has(m.file) && /password reset code/i.test(subj(m))), "…but no second code is sent");
+
+  // Replying with the reset code does nothing to it.
+  const res = await inject(reply(OP, formatCode(codeR), resetMail));
+  assert(res.action !== "checkin" && res.action !== "ack", `reset code by reply is not accepted (${res.action})`);
+
+  r = await api("POST", "/deadman/password-reset/confirm", { email: OP, code: "K7M4-P2XQ", newPassword: NEWPW });
+  assert(r.status === 400, "wrong reset code refused");
+  r = await api("POST", "/deadman/password-reset/confirm", { email: OP, code: formatCode(codeR), newPassword: "short" });
+  assert(r.status === 400, "short new password refused");
+  r = await api("POST", "/deadman/password-reset/confirm", { email: OP, code: codeR.toLowerCase(), newPassword: NEWPW });
+  assert(r.status === 200 && r.json.switchRunning === true, `reset accepted (${r.json && r.json.message})`);
+  const notice = await waitMail((m) => to(m) === OP && /password was reset/i.test(subj(m)), "reset notice email");
+  assertNoLinks(notice);
+  r = await api("POST", "/deadman/password-reset/confirm", { email: OP, code: formatCode(codeR), newPassword: NEWPW });
+  assert(r.status === 400, "reset code works once");
+
+  r = await api("POST", "/deadman/login", { email: OP, password: "pw-e2e-1234" });
+  assert(r.status === 401, "old password no longer logs in");
+  r = await api("POST", "/deadman/login", { email: OP, password: NEWPW });
+  assert(r.status === 200, "new password logs in");
+  r = await api("POST", "/deadman/emails/fetch", { password: NEWPW });
+  assert(r.status === 200 && r.json.emails.length === 1 && r.json.emails[0].to === BEN && /vault is under the floor/.test(r.json.emails[0].body || r.json.emails[0].content), "recipient list and message restored from the running switch");
+  r = await api("GET", "/deadman/timer-status");
+  assert(r.json.active && r.json.pending === false && r.json.nextCheckin === before.nextCheckin, "switch untouched by the reset (same schedule)");
+  assert(!/CRITICAL|stopped responding/.test((await readMail()).map(subj).join("\n")), "no beneficiary warning or trigger");
+
+  // No switch running: the account starts empty.
+  r = await api("POST", "/deadman/deactivate", { password: NEWPW });
+  assert(r.status === 200, "abort with the new password");
+  r = await api("POST", "/deadman/password-reset/request", { email: OP });
+  const reset2 = await waitMail((m) => to(m) === OP && /password reset code/i.test(subj(m)), "second reset code email");
+  r = await api("POST", "/deadman/password-reset/confirm", { email: OP, code: formatCode(codeOf(reset2)), newPassword: "third-pw-e2e-90" });
+  assert(r.status === 200 && r.json.switchRunning === false, "reset with no switch running");
+  r = await api("POST", "/deadman/login", { email: OP, password: "third-pw-e2e-90" });
+  assert(r.status === 200, "logs in after the second reset");
+  r = await api("POST", "/deadman/emails/fetch", { password: "third-pw-e2e-90" });
+  assert(r.status === 200 && r.json.emails.length === 0, "nothing to restore → empty recipient list");
+}
+
 (async () => {
   startSink();
   await sleep(300);
   if (scenario === "upgrade") {
     await startServer();
     await upgrade();
+  } else if (scenario === "reset") {
+    await startServer();
+    await deployAndArm();
+    await passwordReset();
   } else if (scenario === "failsafe") {
     await startServer({ IMAP_HOST: "127.0.0.1", IMAP_PORT: "1", IMAP_USER: "x", IMAP_PASS: "y" });
     await failsafe();

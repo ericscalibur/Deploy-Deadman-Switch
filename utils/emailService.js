@@ -1187,6 +1187,62 @@ This alert repeats daily while the problem persists. Automated message from Depl
     );
   }
 
+  // Forgot Password (v2.3.2). The code is typed on the page where it was
+  // requested. This email carries no link and no address for Deploy: if
+  // the mailbox is ever compromised, it must not point the intruder at the
+  // dashboard or the server it runs on. The code stays out of the subject
+  // so it does not show on a lock screen.
+  async sendPasswordResetCode(operatorEmail, code, expiresMinutes) {
+    return this.sendAlertEmail(
+      operatorEmail,
+      `Deploy password reset code — ${dateStamp()}`,
+      `<h2>Your password reset code</h2>
+       <p style="font-size:1.4em;letter-spacing:0.1em"><strong>${code}</strong></p>
+       <p>Enter this code on the Forgot Password page where you asked for it.
+       It works once and expires in ${expiresMinutes} minutes. Replying to
+       this email does nothing.</p>
+       <p>If you did not ask for this, ignore it: your password has not
+       changed and your switch is untouched.</p>
+       <p><small>Automated message from Deploy Deadman Switch.</small></p>`,
+      `Your password reset code: ${code}
+
+Enter this code on the Forgot Password page where you asked for it. It works once and expires in ${expiresMinutes} minutes. Replying to this email does nothing.
+
+If you did not ask for this, ignore it: your password has not changed and your switch is untouched.
+
+Automated message from Deploy Deadman Switch.`,
+    );
+  }
+
+  // After a reset: the operator hears about it on the same channel the code
+  // went to, so a reset they did not make cannot go unnoticed. No link.
+  async sendPasswordResetNotice(operatorEmail, { switchRunning = false } = {}) {
+    const stateText = switchRunning
+      ? "Your switch was not changed: it is still running on the same schedule, with the same recipients."
+      : "No switch was running, so there was nothing to restore: your saved recipients could only be read with the old password and have been cleared.";
+    return this.sendAlertEmail(
+      operatorEmail,
+      `Your Deploy password was reset — ${dateStamp()}`,
+      `<h2>Your Deploy password was reset</h2>
+       <p>The dashboard password was changed at ${dateStamp()} using a reset
+       code sent to this address.</p>
+       <p>${stateText}</p>
+       <p>If this was not you, someone can read this mailbox and reach your
+       Deploy dashboard. Secure this email account first, then reset the
+       password again yourself.</p>
+       <p><small>Automated message from Deploy Deadman Switch.</small></p>`,
+      `Your Deploy password was reset
+
+The dashboard password was changed at ${dateStamp()} using a reset code sent to this address.
+
+${stateText}
+
+If this was not you, someone can read this mailbox and reach your Deploy dashboard. Secure this email account first, then reset the password again yourself.
+
+Automated message from Deploy Deadman Switch.`,
+    );
+  }
+
   async testEmailConnection() {
     if (!(await this.ensureReady())) {
       return {

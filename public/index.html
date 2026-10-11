@@ -11,6 +11,7 @@
         <div id="login-page">
             <div class="container">
                 <h1>Deploy</h1>
+                <div id="login-panel">
                 <form id="login-form">
                     <label for="email">Email</label>
                     <input
@@ -43,6 +44,74 @@
                     <a href="#" id="forgot-password-link">Forgot Password</a> |
                     <a href="#" id="signup-login-button">Sign Up</a>
                 </p>
+                </div>
+
+                <div id="reset-panel" style="display: none">
+                    <p class="reset-intro">
+                        Your password is the only key to your saved data, so
+                        it cannot be recovered — but you can set a new one. A
+                        code will be emailed to your operator address. If a
+                        switch is running, it is not changed and its
+                        recipients and messages are restored. If none is
+                        running, your saved recipients cannot be restored.
+                    </p>
+                    <form id="reset-request-form">
+                        <label for="reset-email">Email</label>
+                        <input
+                            type="email"
+                            id="reset-email"
+                            placeholder="Your operator email"
+                            required
+                        />
+                        <button
+                            type="submit"
+                            id="reset-request-button"
+                            class="login-mode"
+                        >
+                            Email me a reset code
+                        </button>
+                    </form>
+                    <form id="reset-confirm-form" style="display: none">
+                        <label for="reset-code">Reset code</label>
+                        <input
+                            type="text"
+                            id="reset-code"
+                            placeholder="XXXX-XXXX"
+                            autocomplete="one-time-code"
+                            autocapitalize="characters"
+                            spellcheck="false"
+                            required
+                        />
+                        <label for="reset-new-password">New password</label>
+                        <input
+                            type="password"
+                            id="reset-new-password"
+                            placeholder="At least 8 characters"
+                            autocomplete="new-password"
+                            minlength="8"
+                            required
+                        />
+                        <label for="reset-confirm-password"
+                            >Confirm new password</label
+                        >
+                        <input
+                            type="password"
+                            id="reset-confirm-password"
+                            autocomplete="new-password"
+                            minlength="8"
+                            required
+                        />
+                        <button
+                            type="submit"
+                            id="reset-confirm-button"
+                            class="login-mode"
+                        >
+                            Set new password
+                        </button>
+                    </form>
+                    <p id="reset-status" class="reset-status" role="status"></p>
+                    <p><a href="#" id="reset-back-link">Back to login</a></p>
+                </div>
             </div>
         </div>
 
@@ -52,13 +121,6 @@
                 <button id="logout-button">Logout</button>
             </div>
             <p>
-                &nbsp;&nbsp;&nbsp;&nbsp;Before you deploy for real, run one
-                full test with a 3-minute check-in and a 9-minute period of
-                inactivity (the smallest values allowed): deploy, reply to arm,
-                reply to a check-in, then stay silent and watch the warning and
-                the trigger arrive. Test the entire sequence for yourself in as
-                little as 12 minutes.
-                <br /><br />
                 &nbsp;&nbsp;&nbsp;&nbsp;Welcome to Deploy: Deadman Switch
                 service. Here’s how it works. You will receive a Check-In at
                 regular intervals. When you receive the email, reply to it with
@@ -79,6 +141,13 @@
                 cannot validate the communication channel. If you uncheck this
                 box, your beneficiary will remain in the dark (and potentially
                 unreachable) until the deadman switch is triggered.
+                <br /><br />
+                &nbsp;&nbsp;&nbsp;&nbsp;[NOTICE] Before you deploy for real,
+                run one full test with a 3-minute check-in and a 9-minute
+                period of inactivity (the smallest values allowed): deploy,
+                reply to arm, reply to a check-in, then stay silent and watch
+                the warning and the trigger arrive. Test the entire sequence
+                for yourself in as little as 12 minutes.
             </p>
 
             <form id="setup-form">
