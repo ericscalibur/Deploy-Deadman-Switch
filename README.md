@@ -2,6 +2,8 @@
 
 A secure, web-based deadman switch service that automatically sends pre-configured emails to designated recipients if you fail to check in within a specified time period.
 
+Want help setting this up as part of a Bitcoin inheritance plan? [The Bitcoin Hardware Store](https://tbhs.sv) offers private sessions, in person in El Salvador or remotely.
+
 ## Features
 
 - 🔒 **Secure Authentication** - JWT-based user authentication with password hashing
