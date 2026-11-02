@@ -130,6 +130,22 @@ spec:
     masked: false
     placeholder: "https://ntfy.sh"
     default: ~
+  watchdog_ntfy_topic:
+    type: string
+    name: Outside Watchdog ntfy Topic
+    description: If this server or its mailbox dies, this topic gets an alert after 24 hours and again after 60. Have someone you trust subscribe to it in the ntfy app. Use a long random name, and not the same topic as ntfy Alert Topic. It uses the ntfy Server below, which must not run on this machine. Leave empty to disable.
+    nullable: true
+    masked: true
+    placeholder: "deploy-watch-a1b2c3d4e5f6a7b8c9d0e1f2"
+    default: ~
+  heartbeat_url:
+    type: string
+    name: Outside Monitor URL (optional)
+    description: For people who prefer a monitoring service. Deploy pings this URL every hour while it can send and read mail, and the monitor alarms when the pings stop. Try Healthchecks.io with a 3-hour period. Treat the URL as a secret. Leave empty to disable.
+    nullable: true
+    masked: true
+    placeholder: "https://hc-ping.com/your-check-id"
+    default: ~
 EOF
 }
 
@@ -171,7 +187,9 @@ process.stdout.write([
   "  imap_password: " + y(d.imap_password),
   "  app_url: " + y(d.app_url),
   "  ntfy_topic: " + y(d.ntfy_topic),
-  "  ntfy_server: " + y(d.ntfy_server)
+  "  ntfy_server: " + y(d.ntfy_server),
+  "  heartbeat_url: " + y(d.heartbeat_url),
+  "  watchdog_ntfy_topic: " + y(d.watchdog_ntfy_topic)
 ].join("\n") + "\n");
 '
     elif [ -f "$CONFIG_FILE" ]; then
@@ -196,6 +214,8 @@ value:
   app_url: ~
   ntfy_topic: ~
   ntfy_server: ~
+  heartbeat_url: ~
+  watchdog_ntfy_topic: ~
 EOF
     fi
 }
@@ -230,14 +250,16 @@ set_config() {
     APP_URL=$(echo "$CONFIG_INPUT" | yq e '.app_url // ""' -)
     NTFY_TOPIC=$(echo "$CONFIG_INPUT" | yq e '.ntfy_topic // ""' -)
     NTFY_SERVER=$(echo "$CONFIG_INPUT" | yq e '.ntfy_server // ""' -)
+    HEARTBEAT_URL=$(echo "$CONFIG_INPUT" | yq e '.heartbeat_url // ""' -)
+    WATCHDOG_NTFY_TOPIC=$(echo "$CONFIG_INPUT" | yq e '.watchdog_ntfy_topic // ""' -)
 
     # Build JSON safely via node (handles special chars in passwords/URLs)
     # Values passed one-per-line to avoid process.argv quoting issues
-    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    CONFIG_JSON=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
         "$EMAIL_PROVIDER" "$GMAIL_USER" "$GMAIL_PASS" \
         "$SMTP_HOST" "$SMTP_PORT" "$SMTP_USER" "$SMTP_PASS" "$APP_URL" \
         "$NTFY_TOPIC" "$NTFY_SERVER" \
-        "$IMAP_HOST" "$IMAP_PORT" "$IMAP_USER" "$IMAP_PASS" | \
+        "$IMAP_HOST" "$IMAP_PORT" "$IMAP_USER" "$IMAP_PASS" "$HEARTBEAT_URL" "$WATCHDOG_NTFY_TOPIC" | \
         node -e '
 const lines = require("fs").readFileSync("/dev/stdin", "utf8").split("\n");
 const v = s => (s === "" || s === "~" || s === "null") ? null : s;
@@ -256,7 +278,9 @@ const cfg = {
   imap_host: v(lines[10]),
   imap_port: parseInt(lines[11]) || 993,
   imap_user: v(lines[12]),
-  imap_password: v(lines[13])
+  imap_password: v(lines[13]),
+  heartbeat_url: v(lines[14]),
+  watchdog_ntfy_topic: v(lines[15])
 };
 process.stdout.write(JSON.stringify(cfg));
 ')
@@ -299,6 +323,8 @@ IMAP_USER=${IMAP_USER}
 IMAP_PASS=${IMAP_PASS}
 NTFY_TOPIC=${NTFY_TOPIC}
 NTFY_SERVER=${NTFY_SERVER}
+HEARTBEAT_URL=${HEARTBEAT_URL}
+WATCHDOG_NTFY_TOPIC=${WATCHDOG_NTFY_TOPIC}
 EOF
     fi
 

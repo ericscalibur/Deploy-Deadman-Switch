@@ -21,8 +21,10 @@ Want help setting this up as part of a Bitcoin inheritance plan? [The Bitcoin Ha
   recipient, answered by reply; you are alerted while you're still around
   to fix a dead address
 - ✉️ **Deliverability-Hardened Trigger** - Plain-word severity subjects (no
-  emoji), optional dedicated sender address for the trigger email, and a
-  self-contained recovery spec inside the trigger email itself
+  emoji), an optional dedicated sender address for the trigger email, and
+  the encrypted payload and its QR code carried in the email itself
+- 🐕 **Outside Watchdog** - Pings a monitor you choose, so someone you trust
+  finds out if this machine or its mailbox dies
 
 ## How It Works
 
@@ -117,6 +119,63 @@ consequences worth understanding before you rely on it:
 
 For a switch you actually depend on, run it on hardware that stays on — a
 Start9 server or equivalent — rather than a laptop that sleeps.
+
+### What has to survive you
+
+Deploy can only fire while it is running, so a switch depends on things that
+may stop after you do. Plan for each one before you rely on it:
+
+| If this stops | What happens | What to do now |
+|---|---|---|
+| The machine loses power, or someone unplugs it | Nothing fires until it runs again | Set up the outside watchdog, and tell someone what the box is and to leave it on |
+| Internet service is cancelled | Mail can't go out until it is restored | Put the bill on a payment that outlasts you, or use a server elsewhere |
+| The mail account is closed, or its password changes | Check-ins and the trigger can't be sent | Use a dedicated mailbox, and test it regularly |
+| GitHub or the Legacy site disappears | The links in the trigger email stop working, though the payload and QR code still arrive | Leave your beneficiary a copy of `Legacy-offline.html` and the recovery steps from the FAQ |
+
+**A deadman switch is one delivery path, not your whole plan.** Also leave the
+same information somewhere that needs no running software, such as a sealed
+letter or instructions with your will.
+
+### Outside watchdog
+
+Nothing on this machine can report this machine being gone, so give someone
+outside it a way to notice. The simplest way uses
+[ntfy](https://ntfy.sh), a free push notification app:
+
+1. Choose a long random topic name, for example with
+   `openssl rand -hex 12`. Treat it like a password.
+2. Have someone you trust install the ntfy app and subscribe to that topic.
+   Tell them what an alert means: find the machine, power it on, and get its
+   internet and mail working.
+3. Set `WATCHDOG_NTFY_TOPIC` to that name. On Start9, use **Outside Watchdog
+   ntfy Topic** in the service config.
+
+Every hour, Deploy tells ntfy to send an alert in 24 hours and a second one in
+60 hours, replacing the pair before. While Deploy is healthy they never arrive.
+If it stops, they do. Deploy also stays quiet while it can't send or read mail,
+so a dead mailbox trips the alarm too.
+
+- **Use a topic of its own.** `NTFY_TOPIC` alerts contain your email address, so
+  don't share that topic with the trusted person.
+- **Keep ntfy off this machine.** Use ntfy.sh or a server elsewhere, or it dies
+  with Deploy. Self-hosted servers need ntfy 2.16 or later.
+- **Test it once.** Set a topic, confirm Deploy has run, then stop it and wait
+  for the alert.
+- **If you retire Deploy,** tell the trusted person, because the alerts already
+  waiting will still go out.
+- **Prefer a monitoring service?** Set `HEARTBEAT_URL` to a ping URL from
+  [Healthchecks.io](https://healthchecks.io) or a self-hosted Uptime Kuma, with
+  a period of about 3 hours. On Start9, use **Outside Monitor URL**. It can
+  keep alerting until someone responds, but it shows the monitor this machine's
+  IP address.
+
+Alerts contain no recipients, messages or keys. Anyone who knows the topic can
+read them or send fake ones, and can replace waiting alerts, so keep it secret.
+
+The watchdog only raises the alarm. It can't deliver anything, so it needs a
+living person to act. A deadline that passed during the outage fires once
+Deploy is running and can send mail again. If the trusted person shouldn't
+trigger delivery, tell them that too.
 
 ## Quick Start
 

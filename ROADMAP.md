@@ -4,6 +4,17 @@ Working list of what's staged for the next release and what's on the
 horizon. Items in "Staged" are already merged on `main` and ship
 automatically with the next version bump.
 
+## Staged
+
+- **Outside watchdog** (`utils/heartbeat.js`): alerts a living person if the
+  machine or mailbox dies after the operator has. Each hour, while mail is
+  healthy, it replaces two delayed ntfy messages (24h and 60h) on
+  `WATCHDOG_NTFY_TOPIC`, and optionally pings `HEARTBEAT_URL`. Alarm only; it
+  delivers nothing.
+- **Peer delivery (idea, undecided)**: friends' nodes hold ciphertext and fire
+  if a node vanishes. The only way to remove the single machine, but it needs
+  its own trust and key design.
+
 ## Shipped in v2.2.0
 
 - **Check-in and acknowledgement by email reply** (spec in

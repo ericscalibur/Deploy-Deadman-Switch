@@ -133,6 +133,9 @@ function applyConfigToEnv(config) {
     // v2.1.0 — out-of-band operator alerting (utils/notify.js)
     ntfy_topic: "NTFY_TOPIC",
     ntfy_server: "NTFY_SERVER",
+    // outside watchdog (utils/heartbeat.js)
+    heartbeat_url: "HEARTBEAT_URL",
+    watchdog_ntfy_topic: "WATCHDOG_NTFY_TOPIC",
     // v2.2.0 — inbound mail for reply-by-email (utils/inboundMail.js)
     imap_host: "IMAP_HOST",
     imap_port: "IMAP_PORT",
@@ -287,6 +290,21 @@ function isLocalhost(req) {
       },
     );
   });
+
+  // Outside watchdog: read at each tick, so a config save takes effect
+  // without a restart (see utils/heartbeat.js).
+  const heartbeat = require("./utils/heartbeat");
+  const smtpReady = () => emailService.initialized;
+  const inboundState = () => inboundMail.getState();
+  heartbeat.start(smtpReady, inboundState);
+  if (heartbeat.isEnabled()) {
+    console.log("✅ Outside watchdog enabled");
+    heartbeat.tick(smtpReady, inboundState);
+  } else {
+    console.warn(
+      "⚠️ No outside watchdog set — if this machine or its mailbox dies, nothing outside it will notice.",
+    );
+  }
 
   // Start servers
   if (
